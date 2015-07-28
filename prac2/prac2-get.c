@@ -19,10 +19,10 @@
 
 struct in_addr* name_to_IP_addr(char*);
 /* int connect_to(struct in_addr*, int, int); */
-int connect_to(char*, int, int);
-void send_HTTP_request(int, char*, char*);
-void get_and_output_HTTP_response(int);
-__dead void usage(void);
+int	 connect_to(char*, int, int);
+void	 send_HTTP_request(int, char*, char*);
+void	 get_and_output_HTTP_response(int);
+__dead void 	usage(void);
 
 
 struct in_addr*
@@ -105,7 +105,8 @@ send_HTTP_request(int fd, char* file, char* host)
     }
 }
 
-void get_and_output_HTTP_response(int fd)
+void
+get_and_output_HTTP_response(int fd)
 {
     char buffer[1024];
     int numBytesRead;

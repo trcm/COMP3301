@@ -8,3 +8,8 @@ DPADD=${LIBEVENT}
 CFLAGS+= -Wall -Werror
 
 .include <bsd.prog.mk>
+
+
+run:
+	rm test
+	./echod test

@@ -71,23 +71,39 @@ echo_accept(int sock, short revents, void *null)
 	event_set(&c->rd_ev, fd, EV_READ | EV_PERSIST, echo_read, c);
 	event_set(&c->wr_ev, fd, EV_WRITE, echo_write, c);
 	event_add(&c->rd_ev, NULL);
+	event_add(&c->wr_ev, NULL);
 }
 
-/*
+
 void
 echo_read(int fd, short revents, void *conn)
 {
-
+// create buffer
+/* struct evbuffer * eBuff = evbuffer_new(); */
+struct conn * c = (struct conn *) conn;
+/* c->buf = evbuffer_new(); */
+/* printf("\n\n%s", (char *) c->buf); */
+// recieve and echo the message to the user
+evbuffer_read(c->buf, fd, 1024);
+fprintf(stdout, "fd %d: %s\n", fd, (char *)c->buf);
+/* fflush(stdout); */
+write();
+evbuffer_write(c->buf, fd);
+/* evbuffer_write(c->evbuffer, fd); */
+// free the buffer
+/* evbuffer_free(eBuff); */
+/* evbuffer_free(c->buf); */
+echo_close(conn);
 }
-*/
 
-/*
+
+
 void
 echo_write(int fd, short revents, void *conn)
 {
-
+printf("fd %d: wrote echo\n", fd);
 }
-*/
+
 
 void
 echo_close(struct conn *c)
