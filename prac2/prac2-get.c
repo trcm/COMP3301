@@ -6,13 +6,27 @@
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <arpa/inet.h>
+
 #include <stdlib.h>
+#include <err.h>
 #include <stdio.h> 
 #include <unistd.h>
 #include <netdb.h>
 #include <string.h>
 
-struct in_addr* name_to_IP_addr(char* hostname)
+#define IP4 AF_INET
+#define IP6 AF_INET6
+
+struct in_addr* name_to_IP_addr(char*);
+/* int connect_to(struct in_addr*, int, int); */
+int connect_to(char*, int, int);
+void send_HTTP_request(int, char*, char*);
+void get_and_output_HTTP_response(int);
+__dead void usage(void);
+
+
+struct in_addr*
+name_to_IP_addr(char* hostname)
 {
     int error;
     struct addrinfo* addressInfo;
@@ -24,36 +38,53 @@ struct in_addr* name_to_IP_addr(char* hostname)
     return &(((struct sockaddr_in*)(addressInfo->ai_addr))->sin_addr);
 }
 
-int connect_to(struct in_addr* ipAddress, int port)
+/* int */
+/* connect_to(struct in_addr* ipAddress, int sockType, int port) */
+int
+connect_to(char* hostname, int sockType, int port)
 {
-    struct sockaddr_in socketAddr;
-    int fd;
+    struct addrinfo hints, *res, *res0;
+    int error;
+    int s;
+    const char *cause = NULL;
+
+    memset(&hints, 0, sizeof(hints));
+    hints.ai_family = PF_UNSPEC;
+    hints.ai_socktype = SOCK_STREAM;
+    error = getaddrinfo(hostname, "http", &hints, &res0);
+    if (error) {
+	errx(1, "%s", gai_strerror(error));
+	/*NOTREACHED*/
+    }
+    s = -1;
+    for (res = res0; res; res = res->ai_next) {
+	s = socket(res->ai_family, res->ai_socktype,
+		   res->ai_protocol);
+	if (s < 0) {
+	    cause = "socket";
+	    continue;
+	}
+
+	if (connect(s, res->ai_addr, res->ai_addrlen) < 0) {
+	    cause = "connect";
+	    close(s);
+	    s = -1;
+	    continue;
+	}
+
+	break;  /* okay we got one */
+    }
+    if (s < 0) {
+	err(1, "%s", cause);
+	/*NOTREACHED*/
+    }
+    freeaddrinfo(res0);  struct sockaddr_in socketAddr;
     
-    /* Create TCP socket */
-    fd = socket(AF_INET, SOCK_STREAM, 0);
-    if(fd < 0) {
-	perror("Error creating socket");
-	exit(1);
-    }
-
-    /* Create a structure that represents the IP address and port number
-     * that we're connecting to.
-     */
-    socketAddr.sin_family = AF_INET;	/* IP v4 */
-    socketAddr.sin_port = htons(port);	// Convert port number to network byte order
-    socketAddr.sin_addr.s_addr = ipAddress->s_addr;	// Copy IP address - already in 
-    							// network byte order
-
-    /* Attempt to connect to server at that address */
-    if(connect(fd, (struct sockaddr*)&socketAddr, sizeof(socketAddr)) < 0) {
-	perror("Error connecting");
-	exit(1);
-    }
-
-    return fd;
+    return s;
 }
 
-void send_HTTP_request(int fd, char* file, char* host)
+void
+send_HTTP_request(int fd, char* file, char* host)
 {
     char* requestString;
 
@@ -95,26 +126,57 @@ void get_and_output_HTTP_response(int fd)
     }
 }
 
-int main(int argc, char* argv[]) {
-    int fd;
+__dead void
+usage(void)
+{
+    extern char *__progname;
+    fprintf(stderr, "usage: %s [-46] [-p port] host [url]\n", __progname);
+    exit(1);
+}
+    
+int
+main(int argc, char* argv[]) {
+    int fd, port, bflag, ch, sockType;
     struct in_addr* ipAddress;
     char* hostname;
 
-    if(argc != 2) {
-	fprintf(stderr, "Usage: %s hostname\n", argv[0]);
-	exit(1);
+    if(argc != 6) {
+	usage();
     }
-    hostname = argv[1];
 
-    /* Convert hostname to IP addr */
+ 
+    bflag = 1; 
+    while ((ch = getopt(argc, argv, "46p:")) != -1) { 
+	switch (ch) { 
+	case '4': 
+	    sockType = 4;
+	    bflag++;
+	    break; 
+	case '6': 
+	    sockType = 6;
+	    bflag++;
+	    break; 
+	case 'p': 
+	    bflag++;
+	    printf("port %d %d\n", bflag, atoi(argv[bflag]));
+	    port = atoi(argv[bflag]);
+	    break; 
+	default: 
+	    usage();
+	} 
+    } 
+    
+    hostname = argv[5];
+	   /* Convert hostname to IP addr */
     ipAddress = name_to_IP_addr(hostname);
     if(!ipAddress) {
-	fprintf(stderr, "%s is not a valid hostname\n", hostname);
-	exit(1);
+	err(1, "%s is not a valid hostname\n", hostname);
+	/* fprintf(stderr, "%s is not a valid hostname\n", hostname); */
+	/* exit(1); */
     }
-
+    
     /* Connect to port 80 on that address */
-    fd = connect_to(ipAddress, 80);
+    fd = connect_to(hostname, sockType, port);
     send_HTTP_request(fd, "/", hostname);
     get_and_output_HTTP_response(fd);
     close(fd);
