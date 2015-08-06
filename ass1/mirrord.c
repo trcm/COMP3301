@@ -25,7 +25,7 @@
 /* global http_parser_settings for all connections */
 static http_parser_settings settings;
 
-request *requests[MAX_REQUESTS];
+request requests[MAX_REQUESTS];
 int requestNum;
 
 
@@ -102,7 +102,7 @@ start_mirror(FILE *logfile, char *hostname, char *port)
 	listen(s, 5);
 
 
-	requests = malloc(sizeof(request) * MAX_REQUESTS);
+	/* requests = malloc(sizeof(request) * MAX_REQUESTS); */
 
 	event_init();
 
@@ -130,21 +130,31 @@ on_complete(http_parser *parser)
 		print_to_log(NULL, "remote arrd [rfc822date] \"HEAD request_url\" response_code data_bytes\n");
 		break;
 	}
-	char * res = "HTTP/1.1 200 OK\n" \
-		"Content-Type: text/html\n" \
-		"Content-Length: 4\n" \
-		"Connection: close\n" \
-		"Server: mirrord/s4333060\n" \
-		"\r\n"
-		"sup\n";
-	int * fd = (int *)parser->data;
-	
-
-	int sendLen = 0;
-	/* do { */
-		sendLen = send(*fd, res, strlen(res), MSG_NOSIGNAL);
 	/* } while (sendLen > 0); */
 
+	int * fd = (int *)parser->data;
+	int f = retrieve_file(requests[requestNum].url);
+	if (f > 0) {
+		struct stat st;
+		fstat(f, &st);
+		char *res = malloc(sizeof(char)*1024);
+		/* create response header */
+		sprintf(res,  
+			"HTTP/1.1 200 OK\n"	    \
+			"Content-Type: text/html\n" \
+			"Content-Length: %jd\n" \
+			"Connection: close\n" \
+			"Server: mirrord/s4333060\n" \
+			"\r\n", st.st_size);
+			
+		int sendLen = 0;
+		/* do { */
+		sendLen = send(*fd, res, strlen(res), MSG_NOSIGNAL);
+		printf("sending file");
+		char fData[1024];
+		read(f, fData, st.st_size);
+		send(*fd, fData, st.st_size, MSG_NOSIGNAL);
+	}
 	close(*fd);
 	return 0;
 }
@@ -152,14 +162,34 @@ on_complete(http_parser *parser)
 int
 on_url(http_parser *parser, const char *at, size_t length)
 {
-	char url[length + 1];
-	strncat(url, at, length);
-	printf("GOT URL %s\n", url);
-	strncpy(requests[requestNum]->url, url, sizeof(url));
+	strncpy(requests[requestNum].url, at+1, length-1);
+	requests[requestNum].url[length] = '\0'; 
+	printf("\n\n%s\t-%d\n\n", requests[requestNum].url, requestNum);
 	fflush(stdout);
 	return 0;
 }	
 
+int
+on_header_field(http_parser *parser, const char *at, size_t length)
+{
+	char field[1024];
+	strncpy(field, at, length);
+	field[length] = '\0';
+	printf("FIeld: %s\n", field);
+	return 0;
+}
+
+int
+retrieve_file(char* filepath)
+{
+	char *wd = malloc(sizeof(char) * 20);
+	char *path = getwd(wd);
+	printf("Trying to retrieve %s from %s\n", filepath, path);
+	int fd = open(filepath, O_RDONLY);
+	printf("File des %d\n", fd);
+
+	return fd;
+}
 
 int
 main(int argc, char *argv[])
@@ -173,6 +203,7 @@ main(int argc, char *argv[])
 	requestNum = 0;
 	
 	settings.on_headers_complete = on_complete;
+	settings.on_header_value = on_header_field;
 	settings.on_url = on_url;
 
 	/* minimum number of command line arguments */
@@ -228,6 +259,9 @@ main(int argc, char *argv[])
 	/* } */
 
 	dirname = argv[argc - 1];
+	if(chdir(dirname) == -1) {
+		err(1, "Could not change to directory");
+	}
 	printf("dirname: %s\n", dirname);
 
 	if (daemonize) {
