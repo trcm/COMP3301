@@ -71,41 +71,30 @@ echo_accept(int sock, short revents, void *null)
     event_set(&c->rd_ev, fd, EV_READ | EV_PERSIST, echo_read, c);
     event_set(&c->wr_ev, fd, EV_WRITE, echo_write, c);
     event_add(&c->rd_ev, NULL);
-    event_add(&c->wr_ev, NULL);
 }
 
 void
 echo_read(int fd, short revents, void *conn)
 {
-    int i;
+	int i;
 // create buffer
 /* struct evbuffer * eBuff = evbuffer_new(); */
-    struct conn * c = (struct conn *) conn;
 // recieve and echo the message to the user
-    char ** data;
-    data =  malloc(sizeof(char*) * 1024);
-    for (i = 0; i < 1024; i++) {
-	data[i] = malloc(sizeof(char) * 1024);
-    }
-    int dLen = 0;
-    do {
-	evbuffer_read(c->buf, fd, 1024);
-	printf("%s %d\n", c->buf->buffer, dLen);
-	if (strcmp(c->buf->buffer, data[dLen]) == 0) {
-	    data[dLen] = c->buf->buffer;
-	    evbuffer_drain(c->buf, strlen(data[dLen]));
-	    dLen++;
+	char ** data;
+	struct conn * c = (struct conn *) conn;
+	data =  malloc(sizeof(char*) * 1024);
+	for (i = 0; i < 1024; i++) {
+		data[i] = malloc(sizeof(char) * 1024);
 	}
-    } while (strcmp(c->buf->buffer, "done\n") != 0);
+	evbuffer_read(c->buf, fd, 1024);
 
 /* evbuffer_read(c->buf, fd, 1024); */
-    fprintf(stdout, "fd %d: %s\n", fd, (char *)c->buf->buffer);
+	fprintf(stdout, "fd %d: %s\n", fd, (char *)c->buf->buffer);
 /* fflush(stdout); */
-    write(fd, "Message recieved\n", 18);
-    evbuffer_write(c->buf, fd);
+	write(fd, "Message recieved\n", 18);
 /* evbuffer_write(c->evbuffer, fd); */
 // free the buffer
-    echo_close(conn);
+	event_add(&c->wr_ev, NULL);
 }
 
 
@@ -113,7 +102,10 @@ echo_read(int fd, short revents, void *conn)
 void
 echo_write(int fd, short revents, void *conn)
 {
-    printf("fd %d: wrote echo\n", fd);
+	struct conn * c = (struct conn *) conn;
+	evbuffer_write(c->buf, fd);
+	printf("fd %d: wrote echo\n", fd);
+	echo_close(conn);
 }
 
 
