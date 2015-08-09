@@ -13,7 +13,7 @@
 #include <netdb.h>
 #include <fcntl.h>
 #include <unistd.h>
-#include <limits.h>
+/* #include <limits.h> */
 #include <errno.h>
 #include <err.h>
 #include <semaphore.h>
@@ -197,6 +197,7 @@ on_complete(http_parser *parser)
 			fstat(f, &st);
 
 			/* create time buffers for headers and log */
+			/* TODO fix modification time */
 			struct tm *modtime;
 			modtime = gmtime(&st.st_mtime);
 			time(&curr);
