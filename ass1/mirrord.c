@@ -62,22 +62,27 @@ void
 ack_con(int sock, short revents, void *logfile)
 {
 	int 		fd, recvLen;
+	/* int             on = 1; */
 	struct sockaddr_storage ss;
 	socklen_t 	socklen = sizeof(ss);
 	
 	fd = accept(sock, (struct sockaddr *) & ss, &socklen);
 
+	printf("%d\n", fd);
 	if (fd == -1) {
 		switch(errno) {
 		case ECONNABORTED:
 			/* TODO handle disconnect */
-			close(fd);
+			printf("connetion abort");
 			return;
 		default:
 			err(1, "An error occured while accepting the connection");
 		}
 		
 	}
+	/* if (ioctl(fd, FIONBIO, &on) == -1) { */
+	/* 	err(1, "Failed to set nonblocking socket"); */
+	/* } */
 	
 	// init http_parser
 	http_parser * hp = malloc(sizeof(http_parser));
@@ -219,7 +224,10 @@ on_complete(http_parser *parser)
 			int sendLen = 0;
 			/* send response header */
 			sendLen = send(*fd, res, strlen(res), MSG_NOSIGNAL);
+			char *entry = create_log_entry(requests[requestNum].remote_addr, cbuff, requests[requestNum].method,
+						       requests[requestNum].url, 200, st.st_size);
 
+			sem_post(reqSem);
 			/* start reading file  */
 			void *fData = malloc(sizeof(char)*CHUNK);
 			size_t nBytes;
@@ -230,38 +238,6 @@ on_complete(http_parser *parser)
 				send(*fd, fData, nBytes, MSG_NOSIGNAL);
 			} while (nBytes > 0);
 		
-			/* int i, hNum = requests[requestNum].headerNum; */
-			/* /\* get host name for log *\/ */
-			/* char fullHost[30]; */
-			/* for (i = 0; i < hNum; i++) */
-			/* { */
-			/* 	if (strcmp(requests[requestNum].headerFields[i], "Host") == 0) */
-			/* 	{ */
-			/* 		strcpy(fullHost, requests[requestNum].headerValues[i]); */
-			/* 		break; */
-			/* 	} */
-			/* 	fflush(stdout); */
-			/* } */
-
-			/* /\* get hostname from the host header field - REFACTOR *\/ */
-			/* char hostname[30]; */
-			/* uint j; */
-			/* for (j = 0; j < strlen(fullHost); j++) */
-			/* { */
-			/* 	if (fullHost[j] == ':') */
-			/* 	{ */
-			/* 		hostname[j] = '\0'; */
-			/* 		break; */
-			/* 	} else { */
-			/* 		hostname[j] = fullHost[j]; */
-				
-			/* 	} */
-			
-			/* } */
-			/* fflush(stdout); */
-
-			char *entry = create_log_entry(requests[requestNum].remote_addr, cbuff, requests[requestNum].method,
-						       requests[requestNum].url, 200, st.st_size);
 			print_to_log(entry);
 
 			free(fData);
@@ -349,7 +325,7 @@ on_complete(http_parser *parser)
 	/* printf("%d\n", requestNum); */
 	requestNum++;
 	sem_post(reqSem);
-	close(*fd);
+	/* close(*fd); */
 	return 0;
 }
 
@@ -434,13 +410,15 @@ start_mirror(FILE *logfile, char *hostname, char *port)
 
 	if (s == -1) {
 		/* handle socket errors */
-		
 	}
 	
 	setsockopt(s, SOL_SOCKET, SO_REUSEPORT, &optval, sizeof(optval));
 	if (bind(s, res->ai_addr, res->ai_addrlen) == -1)
 		err(1, "Failed to bind to port %s", port);
 
+	/* if (ioctl(s, FIONBIO, &on) == -1) { */
+	/* 	err(1, "Failed to set nonblocking socket"); */
+	/* } */
 	
 	if (listen(s, 5) == -1) 
 		err(1, "Failed to listen on socket");
