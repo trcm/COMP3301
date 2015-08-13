@@ -14,13 +14,3 @@ CFLAGS+= -Wsign-compare
 
 .include <bsd.prog.mk>
 
-# all: http-parser.o
-# 	gcc ${CFLAGS} ${LDADD} mirrord.c http-parser/http_parser.o -o mirrord
-
-clean:
-	rm *.o 
-	rm mirrord
-
-# http-parser.o:
-# 	gmake -C http-parser package
-

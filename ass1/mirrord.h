@@ -12,6 +12,13 @@ typedef struct request {
 	int headerNum;
 } request;
 
+struct conn {
+	struct event rd_ev;
+	struct event wr_ev;
+	struct evbuffer *ev;
+	struct http_parser *parser;
+};
+
 int		 on_complete(http_parser *);
 int		 on_url(http_parser *, const char *, size_t);
 int 		 start_mirror(FILE *, char *, char *);
@@ -22,5 +29,8 @@ int		 retrieve_file(char*);
 int		 on_header_field(http_parser*, const char*, size_t);
 int		 on_header_value(http_parser*, const char*, size_t);
 char*		 create_log_entry(char*, char*, char*, char*, int, int);
+void 		 handle_read(int , short, void*);
+void 		 handle_send(int , short, void*);
+void             close_connection(struct conn *);
 __dead void 	 usage(void);
 
