@@ -126,7 +126,7 @@ ack_con(int sock, short revents, void *logfile)
 	/* 	sem_post(reqSem); */
 	/* } */
 
-	event_set(&c->rd_ev, fd, EV_READ | EV_PERSIST, handle_read, c);	
+	event_set(&c->rd_ev, fd, EV_READ | EV_PERSIST, handle_read, c);
 	event_set(&c->wr_ev, fd, EV_WRITE , handle_send, c);	
 
 	event_add(&c->rd_ev, NULL);
@@ -141,6 +141,7 @@ handle_read(int fd, short revents, void* conn)
 	/* http_parser * hp = malloc(sizeof(http_parser)); */
 	http_parser_settings * settings = malloc(sizeof(http_parser_settings));
 
+	char *req = malloc(sizeof(char) * CHUNK);
 	/* settings->on_headers_complete = on_complete; */
 	settings->on_header_field = on_header_field;
 	settings->on_header_value = on_header_value;
@@ -149,11 +150,11 @@ handle_read(int fd, short revents, void* conn)
 	http_parser_init(c->parser, HTTP_REQUEST);
 	c->parser->data = &fd;
 	do {
-		recvLen = evbuffer_read(c->ev, fd, 1024);
-		http_parser_execute(c->parser, settings, c->ev->buffer, recvLen);
+		recvLen = recv(fd, req, 1024, 0);
+		/* recvLen = evbuffer_read(c->ev, fd, 1024); */
+		http_parser_execute(c->parser, settings, req, recvLen);
 	} while (recvLen > 0);
 
-	/* close_connection(c); */
 	event_add(&c->wr_ev, NULL);
 }
 
@@ -258,28 +259,41 @@ handle_send(int fd, short revents, void* conn)
 						       requests[requestNum].url, 200, st.st_size);
 
 			/* /\* start reading file  *\/ */
-			void * fData = malloc(sizeof(char*) * CHUNK);
+			/* void * fData = malloc(sizeof(char*) * CHUNK); */
 			
 			evbuffer_free(c->ev);
 			c->ev = evbuffer_new();
-			size_t len;
-			size_t total = 0;
+			/* c->totalSent = 0; */
+			/* size_t len; */
+			/* size_t total = 0; */
 			requestNum++;
 
-			do {
-			 len = evbuffer_read(c->ev, f, 4096);
-			 while (EVBUFFER_LENGTH(c->ev) > 0) {
-				evbuffer_write(c->ev, fd);
-			 }
-			 total = total + len;
-			} while (total < (size_t)st.st_size);
+			/* TODO rewrite to use events to send the file */
+			printf("delete events\n");
+			// trigger read event
+			c->fileSize = st.st_size;
+
+			event_del(&c->rd_ev);
+			event_set(&c->rd_fev, f, EV_READ | EV_PERSIST, read_file, c);
+			event_set(&c->wr_fev, fd, EV_WRITE, send_file, c);
+
+			printf("trigger read\n");
+			event_add(&c->rd_fev, NULL);
+
+			/* do { */
+			/*  len = evbuffer_read(c->ev, f, 4096); */
+			/*  while (EVBUFFER_LENGTH(c->ev) > 0) { */
+			/* 	evbuffer_write(c->ev, fd); */
+			/*  } */
+			/*  total = total + len; */
+			/* } while (total < (size_t)st.st_size); */
 			
 			print_to_log(entry);
 
-			free(fData);
-			free(res);
-			close_connection(c);
-			return;
+		/* 	free(fData); */
+		/* 	free(res); */
+		/* 	close_connection(c); */
+		/* 	return; */
 		} else {
 			/* send 404 header */
 			res = "HTTP/1.0 404 NOT FOUND\n"	    \
@@ -299,6 +313,8 @@ handle_send(int fd, short revents, void* conn)
 						       requests[requestNum].url, 404, 0);
 			print_to_log(entry);
 			send(fd, res, strlen(res), MSG_NOSIGNAL);
+			close_connection(c);
+			return;
 		}
 		
 	} else if (c->parser->method == 2) {
@@ -306,7 +322,7 @@ handle_send(int fd, short revents, void* conn)
 		if (f > 0) {
 			struct stat st;
 			fstat(f, &st);
-			/* char *res = malloc(sizeof(char)*1024); */
+
 
 			/* create time buffers for headers and log */
 			struct tm *modtime;
@@ -360,22 +376,61 @@ handle_send(int fd, short revents, void* conn)
 			send(fd, res, strlen(res), MSG_NOSIGNAL);
 		}
 		
-		
+	
+	
 	}
-	requestNum++;
-	/* sem_post(reqSem); */
-	close_connection(c);
-	return;
+	/* requestNum++; */
+	/* /\* sem_post(reqSem); *\/ */
+	/* close_connection(c); */
+	/* return; */
+}
+
+void
+read_file(int fd, short revents, void* conn)
+{
+	/* printf("read\n"); */
+	fflush(stdout);
+	struct conn * c = conn;
+	/* printf("sent %zu size %zu\n", c->totalSent, (size_t)c->fileSize); */
+	if (c->totalSent == (size_t)c->fileSize) {
+		printf("equal");
+		close_connection(c);
+		return;
+	}
+	size_t len = 0;
+	/* do { */
+	len = evbuffer_read(c->ev, fd, 4096);
+	c->totalSent = c->totalSent + len;
+	/*  while (EVBUFFER_LENGTH(c->ev) > 0) { */
+	/* 	evbuffer_write(c->ev, fd); */
+	/*  } */
+	/*  total = total + len; */
+	/* } while (total < (size_t)st.st_size); */
+	event_add(&c->wr_fev, NULL);
+}
+
+void
+send_file(int fd, short revents, void* conn)
+{
+	struct conn * c = conn;
+	/* printf("send\n"); */
+	while (EVBUFFER_LENGTH(c->ev) > 0) {
+	 	evbuffer_write(c->ev, fd);
+	}
+	
+	event_add(&c->wr_fev, NULL);
 }
 
 void
 close_connection(struct conn *c)
 {
-	/* printf("fd %d: closing \n", EVENT_FD(&c->rd_ev)); */
-
+	printf("fd %d: closing \n", EVENT_FD(&c->rd_ev));
+	
 	evbuffer_free(c->ev);
 	event_del(&c->rd_ev);
 	event_del(&c->wr_ev);
+	event_del(&c->rd_fev);
+	event_del(&c->wr_fev);
 	free(c->parser);
 	close(EVENT_FD(&c->rd_ev));
 	free(c);
@@ -450,7 +505,7 @@ start_mirror(FILE *logfile, char *hostname, char *port)
 	int 		error;
 	int 		s, optval = 1;
 	int 		on = 1;
-	/* printf("Starting mirrord... \n"); */
+	/* printf("Starting mirrord... %d\n", optval); */
 
 	memset(&hints, 0, sizeof(hints));
 	hints.ai_family = PF_UNSPEC;
@@ -579,13 +634,10 @@ main(int argc, char *argv[])
 			err(1, "Could not find port\n");
 		}
 	}
-
 	dirname = argv[argc - 1];
-	/* printf("%s \n", dirname); */
 	if (chdir(dirname) == -1) {
 		err(1, "Could not change to directory");
 	}
-	/* printf("dirname: %s\n", dirname); */
 
 	if (daemonize) {
 		/* daemonize the process */

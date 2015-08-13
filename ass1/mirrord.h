@@ -15,7 +15,12 @@ typedef struct request {
 struct conn {
 	struct event rd_ev;
 	struct event wr_ev;
+	struct event rd_fev;
+	struct event wr_fev;
 	struct evbuffer *ev;
+	off_t fileSize;
+	size_t totalSent;
+	int requestNum;
 	struct http_parser *parser;
 };
 
@@ -29,8 +34,10 @@ int		 retrieve_file(char*);
 int		 on_header_field(http_parser*, const char*, size_t);
 int		 on_header_value(http_parser*, const char*, size_t);
 char*		 create_log_entry(char*, char*, char*, char*, int, int);
-void 		 handle_read(int , short, void*);
-void 		 handle_send(int , short, void*);
+void 		 handle_read(int, short, void*);
+void 		 handle_send(int, short, void*);
+void 		 read_file(int, short, void*);
+void 		 send_file(int, short, void*);
 void             close_connection(struct conn *);
 __dead void 	 usage(void);
 
