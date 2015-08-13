@@ -63,7 +63,7 @@ void
 ack_con(int sock, short revents, void *logfile)
 {
 	int 		fd, recvLen;
-	/* int             on = 1; */
+	int             on = 1;
 	struct sockaddr_storage ss;
 	socklen_t 	socklen = sizeof(ss);
 	
@@ -81,13 +81,9 @@ ack_con(int sock, short revents, void *logfile)
 	}
 	printf("connection\n");
 
-	/* if (ioctl(fd, FIONBIO, &on) == -1) */
-	/* 	err(1, "Failed to set nonblocking fd"); */
+	if (ioctl(fd, FIONBIO, &on) == -1)
+		err(1, "Failed to set nonblocking fd");
 
-	// init http_parser
-	/* http_parser * hp = malloc(sizeof(http_parser)); */
-	/* http_parser_init(hp, HTTP_REQUEST); */
-	/* sem_wait(reqSem); */
 	struct sockaddr_in *s = (struct sockaddr_in *) &ss;
 	char *address = inet_ntoa(s->sin_addr);
 	
@@ -95,8 +91,6 @@ ack_con(int sock, short revents, void *logfile)
 	strncat(requests[requestNum].remote_addr, address, strlen(address));
 
 	
-	/* hp->data = &fd; */
-	/* char * req = malloc(sizeof(char) * 1024); */
 	requests[requestNum].headerNum = 0;
 	struct conn *c;
 	c = malloc(sizeof(*c));
@@ -133,7 +127,7 @@ ack_con(int sock, short revents, void *logfile)
 	/* } */
 
 	event_set(&c->rd_ev, fd, EV_READ | EV_PERSIST, handle_read, c);	
-	event_set(&c->wr_ev, fd, EV_WRITE, handle_send, c);	
+	event_set(&c->wr_ev, fd, EV_WRITE , handle_send, c);	
 
 	event_add(&c->rd_ev, NULL);
 	
@@ -154,7 +148,6 @@ handle_read(int fd, short revents, void* conn)
 
 	http_parser_init(c->parser, HTTP_REQUEST);
 	c->parser->data = &fd;
-	printf("%d\n", fd);
 	do {
 		recvLen = evbuffer_read(c->ev, fd, 1024);
 		http_parser_execute(c->parser, settings, c->ev->buffer, recvLen);
@@ -237,12 +230,11 @@ handle_send(int fd, short revents, void* conn)
 		if (f > 0) {
 			struct stat st;
 			fstat(f, &st);
-
 			
 			/* create time buffers for headers and log */
 			/* TODO fix modification time */
 			struct tm *modtime;
-			modtime = gmtime(&st.st_mtime);
+			modtime = localtime(&st.st_mtime);
 			time(&curr);
 			currtime = gmtime(&curr);
 			char buff[30];
@@ -265,24 +257,21 @@ handle_send(int fd, short revents, void* conn)
 			char *entry = create_log_entry(requests[requestNum].remote_addr, cbuff, requests[requestNum].method,
 						       requests[requestNum].url, 200, st.st_size);
 
-
 			/* /\* start reading file  *\/ */
-			printf("%d\n", fd);
 			void * fData = malloc(sizeof(char*) * CHUNK);
 			
 			evbuffer_free(c->ev);
 			c->ev = evbuffer_new();
 			size_t len;
 			size_t total = 0;
-			/* evbuffer_drain(c->ev, EVBUFFER_LENGTH(c->ev)); */
-			do {
+			requestNum++;
 
+			do {
 			 len = evbuffer_read(c->ev, f, 4096);
 			 while (EVBUFFER_LENGTH(c->ev) > 0) {
-				 evbuffer_write(c->ev, fd);
+				evbuffer_write(c->ev, fd);
 			 }
 			 total = total + len;
-			 printf("total %zu\n", total);
 			} while (total < (size_t)st.st_size);
 			
 			print_to_log(entry);
@@ -290,7 +279,6 @@ handle_send(int fd, short revents, void* conn)
 			free(fData);
 			free(res);
 			close_connection(c);
-			requestNum++;
 			return;
 		} else {
 			/* send 404 header */
@@ -322,7 +310,9 @@ handle_send(int fd, short revents, void* conn)
 
 			/* create time buffers for headers and log */
 			struct tm *modtime;
-			modtime = gmtime(&st.st_mtime);
+			modtime = localtime(&st.st_mtime);
+			printf("%s\n", ctime(&st.st_mtime));
+			fflush(stdout);
 			time(&curr);
 			currtime = gmtime(&curr);
 			char buff[30];
@@ -432,7 +422,7 @@ retrieve_file(char* filepath)
 	char *path = getcwd(NULL, 0);
 
 	/* printf("Trying to retrieve %s from %s\n", filepath, path); */
-	int fd = open(filepath, O_RDONLY);
+	int fd = open(filepath, O_RDONLY | O_NONBLOCK);
 	
 	free(path);
 	return fd;
@@ -467,7 +457,6 @@ start_mirror(FILE *logfile, char *hostname, char *port)
 	hints.ai_socktype = SOCK_STREAM;
 	hints.ai_flags = AI_PASSIVE;
 
-	/* error = getaddrinfo(hostname, port, &hints, &res); */
 	error = getaddrinfo(hostname, port, &hints, &res);
 	if (error)
 		errx(1, "%s", gai_strerror(error));
@@ -479,15 +468,13 @@ start_mirror(FILE *logfile, char *hostname, char *port)
 	}
 	
 	setsockopt(s, SOL_SOCKET, SO_REUSEPORT, &optval, sizeof(optval));
+
 	if (bind(s, res->ai_addr, res->ai_addrlen) == -1)
 		err(1, "Failed to bind to port %s", port);
 
 	if (ioctl(s, FIONBIO, &on) == -1) 
 		err(1, "Failed to set nonblocking socket");
 
-	if (fcntl(s, F_SETFL, O_NONBLOCK) == -1)
-		err(1, "Failed to set nonblocking");
-	
 	if (listen(s, 5) == -1) 
 		err(1, "Failed to listen on socket");
 
