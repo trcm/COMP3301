@@ -31,10 +31,10 @@
 /* static http_parser_settings settings; */
 /* static char* logfile; */
 
-request requests[MAX_REQUESTS];
+request **requests;
 int requestNum;
 int logFlag, daemonized;
-sem_t *reqSem;
+sem_t reqSem;
 FILE *logptr;
 
 __dead void
@@ -83,15 +83,17 @@ ack_con(int sock, short revents, void *logfile)
 
 	if (ioctl(fd, FIONBIO, &on) == -1)
 		err(1, "Failed to set nonblocking fd");
-
+	printf("waiting for sem\n");
+	sem_wait(&reqSem);
+	printf("request number %d\n", requestNum);
 	struct sockaddr_in *s = (struct sockaddr_in *) &ss;
 	char *address = inet_ntoa(s->sin_addr);
 	
-	strncat(requests[requestNum].remote_addr, "\0", 1);
-	strncat(requests[requestNum].remote_addr, address, strlen(address));
+	strncat(requests[requestNum]->remote_addr, "\0", 1);
+	strncat(requests[requestNum]->remote_addr, address, strlen(address));
 
 	
-	requests[requestNum].headerNum = 0;
+	requests[requestNum]->headerNum = 0;
 	struct conn *c;
 	c = malloc(sizeof(*c));
 	c->ev = evbuffer_new();
@@ -101,16 +103,23 @@ ack_con(int sock, short revents, void *logfile)
 	/* if (peek > 0) { */
 	recvLen = 1;
 
-	/* do { */
-	/* 	recvLen = recv(fd, req, 50, 0); */
-	/* 	printf("%d\n", recvLen); */
-	/* 	http_parser_execute(hp, settings, req, recvLen); */
-	/* } while (recvLen > 0); */
 
-	/* http_parser_execute(hp, settings, req, recvLen); */
+	event_set(&c->rd_ev, fd, EV_READ | EV_PERSIST, handle_read, c);
+	event_set(&c->wr_ev, fd, EV_WRITE , handle_send, c);	
+
+	event_add(&c->rd_ev, NULL);
+	/* int peek = recv(fd, req, 50, MSG_PEEK); */
+	/* if (peek > 0) { */
+	/* 	do { */
+	/* 		recvLen = recv(fd, req, 50, 0); */
+	/* 		printf("recv len %d\n", recvLen); */
+	/* 		http_parser_execute(c->parser, settings, req, recvLen); */
+	/* 	} while (recvLen > 0); */
+
+	/* 	/\* http_parser_execute(c->parser, settings, req, recvLen); *\/ */
+
 		
 	/* } else { */
-	/* 	printf("%d\n", peek); */
 	/* 	/\* connection ended before the http request was sent *\/ */
 	/* 	/\* send and log response *\/ */
 	/* 	time_t curr; */
@@ -123,13 +132,10 @@ ack_con(int sock, short revents, void *logfile)
 	/* 				       cbuff, "-", "-", 444, 0); */
 	/* 	print_to_log(entry); */
 	/* 	requestNum++; */
-	/* 	sem_post(reqSem); */
+	/* 	sem_post(&reqSem); */
+	/* 	close_connection(c); */
+	/* 	return; */
 	/* } */
-
-	event_set(&c->rd_ev, fd, EV_READ | EV_PERSIST, handle_read, c);
-	event_set(&c->wr_ev, fd, EV_WRITE , handle_send, c);	
-
-	event_add(&c->rd_ev, NULL);
 	
 }
 
@@ -137,24 +143,44 @@ void
 handle_read(int fd, short revents, void* conn)
 {
 	struct conn *c = conn;
-	int recvLen = 0;
+	ssize_t recvLen;
 	/* http_parser * hp = malloc(sizeof(http_parser)); */
 	http_parser_settings * settings = malloc(sizeof(http_parser_settings));
 
-	char *req = malloc(sizeof(char) * CHUNK);
+	http_parser_settings_init(settings);
+	char *req = malloc(sizeof(char) * 4096);
+	/* char req[4096]; */
 	/* settings->on_headers_complete = on_complete; */
-	settings->on_header_field = on_header_field;
-	settings->on_header_value = on_header_value;
+	/* settings->on_header_field = on_header_field; */
+	/* settings->on_header_value = on_header_value; */
 	settings->on_url = on_url;
 
 	http_parser_init(c->parser, HTTP_REQUEST);
 	c->parser->data = &fd;
-	do {
-		recvLen = recv(fd, req, 1024, 0);
-		/* recvLen = evbuffer_read(c->ev, fd, 1024); */
-		http_parser_execute(c->parser, settings, req, recvLen);
-	} while (recvLen > 0);
+	/* do { */
+	printf("wait read\n");
+	recvLen = recv(fd, req, 4096, 0);
+	printf("%zu\n", recvLen);
+		/* recvLen = evbuffer_read(c->ev, fd, 4096); */
+	/* } while (recvLen > 0); */
 
+	ssize_t parsed = http_parser_execute(c->parser, settings, req, recvLen);
+	
+	printf("%zu %zu\n", recvLen, parsed);
+	if (recvLen != parsed) {
+		printf("%d errno", c->parser->http_errno);
+		printf("%s\n", http_errno_name(c->parser->http_errno));
+		printf("%s\n", http_errno_description(c->parser->http_errno));
+		close_connection(c);
+		sem_post(&reqSem);
+		requestNum++;
+		return;
+	}
+
+	/* http_parser_execute(c->parser, settings, c->ev->buffer, recvLen); */
+	free(settings);
+	free(req);
+	printf("trigger\n");
 	event_add(&c->wr_ev, NULL);
 }
 
@@ -172,10 +198,10 @@ handle_send(int fd, short revents, void* conn)
 	switch (c->parser->method)
 	{
 	case 1:
-		strncpy(requests[requestNum].method, "GET", 3);
+		strncpy(requests[requestNum]->method, "GET", 3);
 		break;
 	case 2:
-		strncpy(requests[requestNum].method, "HEAD", 4);
+		strncpy(requests[requestNum]->method, "HEAD", 4);
 		break;
 	default:
 		/* method not supported */
@@ -191,15 +217,17 @@ handle_send(int fd, short revents, void* conn)
 			 "Server: mirrord/s4333060\n" \
 			 "\r\n", cbuff);
 		send(fd, res, strlen(res), MSG_NOSIGNAL);
-		char *entry = create_log_entry(requests[requestNum].remote_addr, cbuff, "-",
-					       requests[requestNum].url, 405, 0);
+		char *entry = create_log_entry(requests[requestNum]->remote_addr, cbuff, "-",
+					       requests[requestNum]->url, 405, 0);
 		print_to_log(entry);
 		requestNum++;
+		
+		sem_post(&reqSem);
 		free(res);
 		close_connection(c);
 		return;
 	}
-	int f = retrieve_file(requests[requestNum].url);
+	int f = retrieve_file(requests[requestNum]->url);
 	
 	if (f == -1 && errno != ENOENT) {
 		// TODO handle fd open error, send 500 response
@@ -216,13 +244,13 @@ handle_send(int fd, short revents, void* conn)
 		send(fd, res, strlen(res), MSG_NOSIGNAL);
 
 		// TODO get the parser method
-		char *entry = create_log_entry(requests[requestNum].remote_addr, cbuff, "-",
-					       requests[requestNum].url, 500, 0);
+		char *entry = create_log_entry(requests[requestNum]->remote_addr, cbuff, "-",
+					       requests[requestNum]->url, 500, 0);
 		print_to_log(entry);
 		free(entry);
 		free(res);
 		requestNum++;
-		/* sem_post(reqSem); */
+		sem_post(&reqSem);
 		close_connection(c);
 		return;
 	}
@@ -255,21 +283,21 @@ handle_send(int fd, short revents, void* conn)
 			int sendLen = 0;
 			/* send response header */
 			sendLen = send(fd, res, strlen(res), MSG_NOSIGNAL);
-			char *entry = create_log_entry(requests[requestNum].remote_addr, cbuff, requests[requestNum].method,
-						       requests[requestNum].url, 200, st.st_size);
+			char *entry = create_log_entry(requests[requestNum]->remote_addr, cbuff, requests[requestNum]->method,
+						       requests[requestNum]->url, 200, st.st_size);
 
 			/* /\* start reading file  *\/ */
 			/* void * fData = malloc(sizeof(char*) * CHUNK); */
 			
 			evbuffer_free(c->ev);
 			c->ev = evbuffer_new();
-			/* c->totalSent = 0; */
+			c->totalSent = 0;
 			/* size_t len; */
 			/* size_t total = 0; */
 			requestNum++;
-
+			printf("Post sem\n");
+			sem_post(&reqSem);
 			/* TODO rewrite to use events to send the file */
-			printf("delete events\n");
 			// trigger read event
 			c->fileSize = st.st_size;
 
@@ -277,7 +305,6 @@ handle_send(int fd, short revents, void* conn)
 			event_set(&c->rd_fev, f, EV_READ | EV_PERSIST, read_file, c);
 			event_set(&c->wr_fev, fd, EV_WRITE, send_file, c);
 
-			printf("trigger read\n");
 			event_add(&c->rd_fev, NULL);
 
 			/* do { */
@@ -309,10 +336,11 @@ handle_send(int fd, short revents, void* conn)
 
 			fflush(stdout);
 
-			char *entry = create_log_entry(requests[requestNum].remote_addr, cbuff, requests[requestNum].method,
-						       requests[requestNum].url, 404, 0);
+			char *entry = create_log_entry(requests[requestNum]->remote_addr, cbuff, requests[requestNum]->method,
+						       requests[requestNum]->url, 404, 0);
 			print_to_log(entry);
 			send(fd, res, strlen(res), MSG_NOSIGNAL);
+			sem_post(&reqSem);
 			close_connection(c);
 			return;
 		}
@@ -349,8 +377,8 @@ handle_send(int fd, short revents, void* conn)
 			/* send response header */
 			sendLen = send(fd, res, strlen(res), MSG_NOSIGNAL);
 
-			char *entry = create_log_entry(requests[requestNum].remote_addr, cbuff, requests[requestNum].method,
-						       requests[requestNum].url, 200, 0);
+			char *entry = create_log_entry(requests[requestNum]->remote_addr, cbuff, requests[requestNum]->method,
+						       requests[requestNum]->url, 200, 0);
 			print_to_log(entry);
 
 			/* free(fData); */
@@ -370,8 +398,8 @@ handle_send(int fd, short revents, void* conn)
 
 			fflush(stdout);
 
-			char *entry = create_log_entry(requests[requestNum].remote_addr, cbuff, requests[requestNum].method,
-						       requests[requestNum].url, 404, 0);
+			char *entry = create_log_entry(requests[requestNum]->remote_addr, cbuff, requests[requestNum]->method,
+						       requests[requestNum]->url, 404, 0);
 			print_to_log(entry);
 			send(fd, res, strlen(res), MSG_NOSIGNAL);
 		}
@@ -380,7 +408,7 @@ handle_send(int fd, short revents, void* conn)
 	
 	}
 	/* requestNum++; */
-	/* /\* sem_post(reqSem); *\/ */
+	/* /\* sem_post(reqSemreqSem); *\/ */
 	/* close_connection(c); */
 	/* return; */
 }
@@ -388,12 +416,17 @@ handle_send(int fd, short revents, void* conn)
 void
 read_file(int fd, short revents, void* conn)
 {
-	/* printf("read\n"); */
+	printf("read\n");
 	fflush(stdout);
 	struct conn * c = conn;
-	/* printf("sent %zu size %zu\n", c->totalSent, (size_t)c->fileSize); */
+
+	if (EVBUFFER_LENGTH(c->ev) > 0)
+		return;
+
+	printf("sent %zu size %zu\n", c->totalSent, (size_t)c->fileSize);
 	if (c->totalSent == (size_t)c->fileSize) {
 		printf("equal");
+		close(fd);
 		close_connection(c);
 		return;
 	}
@@ -401,6 +434,7 @@ read_file(int fd, short revents, void* conn)
 	/* do { */
 	len = evbuffer_read(c->ev, fd, 4096);
 	c->totalSent = c->totalSent + len;
+	
 	/*  while (EVBUFFER_LENGTH(c->ev) > 0) { */
 	/* 	evbuffer_write(c->ev, fd); */
 	/*  } */
@@ -413,12 +447,36 @@ void
 send_file(int fd, short revents, void* conn)
 {
 	struct conn * c = conn;
-	/* printf("send\n"); */
-	while (EVBUFFER_LENGTH(c->ev) > 0) {
-	 	evbuffer_write(c->ev, fd);
-	}
+	printf("send\n");
+	while (EVBUFFER_LENGTH(c->ev) > 0)
+		evbuffer_write(c->ev, fd);
+		/* event_add(&c->wr_ev, NULL); */
 	
-	event_add(&c->wr_fev, NULL);
+	/* event_add(&c->rd_fev, NULL); */
+	/* int len = evbuffer_write(c->ev, fd); */
+	/* printf("%d bytes sent\n", len); */
+	/* fflush(stdout); */
+	/* if (len == -1) */
+	/* { */
+	/* 	switch(errno) */
+	/* 	{ */
+
+	/* 	case EAGAIN: */
+	/* 		event_add(&c->wr_fev, NULL); */
+	/* 		return; */
+	/* 	default: */
+	/* 		warn("write"); */
+	/* 		close_connection(c); */
+	/* 		return; */
+	/* 	} */
+		
+	/* } */
+	
+	/* if (EVBUFFER_LENGTH(c->ev) > 0) */
+	/* 	event_add(&c->wr_fev, NULL); */
+
+	/* event_add(&c->rd_fev, NULL); */
+	/* return; */
 }
 
 void
@@ -439,36 +497,37 @@ close_connection(struct conn *c)
 int
 on_url(http_parser *parser, const char *at, size_t length)
 {
-	strncpy(requests[requestNum].url, at+1, length-1);
-	requests[requestNum].url[length] = '\0'; 
+	printf("URL URL URL\n\n");
+	strncpy(requests[requestNum]->url, at+1, length-1);
+	requests[requestNum]->url[length] = '\0'; 
 	/* printf("\n\n%s\t-%d\n\n", requests[requestNum].url, requestNum); */
 	fflush(stdout);
 	return 0;
 }	
 
-int
-on_header_field(http_parser *parser, const char *at, size_t length)
-{
-	requests[requestNum].headerNum++;
-	char field[1024];
-	strncpy(field, at, length);
-	field[length] = '\0';
-	strncpy(requests[requestNum].headerFields[requests[requestNum].headerNum], field,
-		strlen(field));
-	return 0;
-}
+/* int */
+/* on_header_field(http_parser *parser, const char *at, size_t length) */
+/* { */
+/* 	requests[requestNum].headerNum++; */
+/* 	char field[1024]; */
+/* 	strncpy(field, at, length); */
+/* 	field[length] = '\0'; */
+/* 	strncpy(requests[requestNum].headerFields[requests[requestNum].headerNum], field, */
+/* 		strlen(field)); */
+/* 	return 0; */
+/* } */
 
-int
-on_header_value(http_parser *parser, const char *at, size_t length)
-{
-	int hNum =  requests[requestNum].headerNum;
-	char field[1024];
-	strncpy(field, at, length);
-	field[length] = '\0';
-	strncat(requests[requestNum].headerValues[hNum], field,
-		strlen(field));
-	return 0;
-}
+/* int */
+/* on_header_value(http_parser *parser, const char *at, size_t length) */
+/* { */
+/* 	int hNum =  requests[requestNum].headerNum; */
+/* 	char field[1024]; */
+/* 	strncpy(field, at, length); */
+/* 	field[length] = '\0'; */
+/* 	strncat(requests[requestNum].headerValues[hNum], field, */
+/* 		strlen(field)); */
+/* 	return 0; */
+/* } */
 
 int
 retrieve_file(char* filepath)
@@ -477,7 +536,7 @@ retrieve_file(char* filepath)
 	char *path = getcwd(NULL, 0);
 
 	/* printf("Trying to retrieve %s from %s\n", filepath, path); */
-	int fd = open(filepath, O_RDONLY | O_NONBLOCK);
+	int fd = open(filepath, O_RDONLY);
 	
 	free(path);
 	return fd;
@@ -556,8 +615,14 @@ main(int argc, char *argv[])
 	requestNum = 0;
 	logFlag = 0;
 	logptr = NULL;
-
-	/* sem_init(reqSem, 1, 1); */
+	requests = malloc(sizeof(request*) * MAX_REQUESTS);
+	int i;
+	for (i = 0; i < MAX_REQUESTS; i++)
+	{
+		requests[i] = malloc(sizeof(request));
+		
+	}
+	sem_init(&reqSem, 0, 2);
 	
 	/* settings = malloc(sizeof(struct http_parser_settings)); */
 
