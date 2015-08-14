@@ -697,7 +697,7 @@ main(int argc, char *argv[])
 	if (!portFlag)
 	{
 		struct servent * s = getservbyname("http", NULL);
-		printf("no port supplied, finding port: ");
+		/* printf("no port supplied, finding port: "); */
 		if (s) {
 			printf("%d\n", s->s_port);
 			asprintf(&port, "%d", s->s_port);
