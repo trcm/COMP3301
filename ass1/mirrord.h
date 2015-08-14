@@ -3,7 +3,7 @@
 #define MAX_SIZE 2048
 
 typedef struct request {
-	char url[MAX_SIZE];
+	char url[50];
 	char host[MAX_SIZE];
 	char remote_addr[16];
 	char method[MAX_SIZE];

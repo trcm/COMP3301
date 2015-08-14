@@ -83,9 +83,9 @@ ack_con(int sock, short revents, void *logfile)
 
 	if (ioctl(fd, FIONBIO, &on) == -1)
 		err(1, "Failed to set nonblocking fd");
-	printf("waiting for sem\n");
+	/* printf("waiting for sem\n"); */
 	sem_wait(&reqSem);
-	printf("request number %d\n", requestNum);
+	/* printf("request number %d\n", requestNum); */
 	struct sockaddr_in *s = (struct sockaddr_in *) &ss;
 	char *address = inet_ntoa(s->sin_addr);
 
@@ -157,15 +157,14 @@ handle_read(int fd, short revents, void* conn)
 	http_parser_init(c->parser, HTTP_REQUEST);
 	c->parser->data = &fd;
 	/* do { */
-	printf("wait read\n");
+	/* printf("wait read\n"); */
 	recvLen = recv(fd, req, 4096, 0);
-	printf("%zu\n", recvLen);
-		/* recvLen = evbuffer_read(c->ev, fd, 4096); */
+	/* printf("%zu\n", recvLen); */
+	/* recvLen = evbuffer_read(c->ev, fd, 4096); */
 	/* } while (recvLen > 0); */
-
 	ssize_t parsed = http_parser_execute(c->parser, settings, req, recvLen);
 	
-	printf("%zu %zu\n", recvLen, parsed);
+	/* printf("%zu %zu\n", recvLen, parsed); */
 	if (recvLen != parsed) {
 		printf("%d errno", c->parser->http_errno);
 		printf("%s\n", http_errno_name(c->parser->http_errno));
@@ -179,7 +178,6 @@ handle_read(int fd, short revents, void* conn)
 	/* http_parser_execute(c->parser, settings, c->ev->buffer, recvLen); */
 	free(settings);
 	free(req);
-	printf("trigger\n");
 	event_add(&c->wr_ev, NULL);
 }
 
@@ -252,6 +250,14 @@ handle_send(int fd, short revents, void* conn)
 		sem_post(&reqSem);
 		close_connection(c);
 		return;
+		/* } else if (f == -2) */
+		/* { */
+		/* 	printf("INVALID SEND 403\n"); */
+		/* 	requestNum++; */
+		/* 	sem_post(&reqSem); */
+		/* 	free(res); */
+		/* 	close_connection(c); */
+		/* 	return; */
 	}
 	if (c->parser->method == 1) {
 		/* GET request */
@@ -260,7 +266,7 @@ handle_send(int fd, short revents, void* conn)
 			fstat(f, &st);
 			
 			/* create time buffers for headers and log */
-			/* TODO fix modification time */
+			// TODO fix mod time properly
 			struct tm *modtime;
 			modtime = localtime(&st.st_mtime);
 			time(&curr);
@@ -294,10 +300,8 @@ handle_send(int fd, short revents, void* conn)
 			/* size_t len; */
 			/* size_t total = 0; */
 			requestNum++;
-			printf("Post sem\n");
 			sem_post(&reqSem);
-			/* TODO rewrite to use events to send the file */
-			// trigger read event
+
 			c->fileSize = st.st_size;
 
 			event_del(&c->rd_ev);
@@ -316,10 +320,10 @@ handle_send(int fd, short revents, void* conn)
 			
 			print_to_log(entry);
 
-		/* 	free(fData); */
-		/* 	free(res); */
-		/* 	close_connection(c); */
-		/* 	return; */
+			/* 	free(fData); */
+			/* 	free(res); */
+			/* 	close_connection(c); */
+			/* 	return; */
 		} else {
 			/* send 404 header */
 			res = "HTTP/1.0 404 NOT FOUND\n"	    \
@@ -382,6 +386,9 @@ handle_send(int fd, short revents, void* conn)
 
 			/* free(fData); */
 			free(res);
+			sem_post(&reqSem);
+			close_connection(c);
+			return;
 		} else {
 			/* send 404 header */
 			res = "HTTP/1.0 404 NOT FOUND\n"	    \
@@ -401,6 +408,9 @@ handle_send(int fd, short revents, void* conn)
 						       requests[requestNum]->url, 404, 0);
 			print_to_log(entry);
 			send(fd, res, strlen(res), MSG_NOSIGNAL);
+			sem_post(&reqSem);
+			close_connection(c);
+			return;
 		}
 		
 	
@@ -415,16 +425,14 @@ handle_send(int fd, short revents, void* conn)
 void
 read_file(int fd, short revents, void* conn)
 {
-	printf("read\n");
 	fflush(stdout);
 	struct conn * c = conn;
 
 	if (EVBUFFER_LENGTH(c->ev) > 0)
 		return;
 
-	printf("sent %zu size %zu\n", c->totalSent, (size_t)c->fileSize);
+	/* printf("sent %zu size %zu\n", c->totalSent, (size_t)c->fileSize); */
 	if (c->totalSent == (size_t)c->fileSize) {
-		printf("equal");
 		close(fd);
 		event_del(&c->rd_fev);
 		event_del(&c->wr_fev);
@@ -448,36 +456,8 @@ void
 send_file(int fd, short revents, void* conn)
 {
 	struct conn * c = conn;
-	printf("send\n");
 	while (EVBUFFER_LENGTH(c->ev) > 0)
 		evbuffer_write(c->ev, fd);
-		/* event_add(&c->wr_ev, NULL); */
-	
-	/* event_add(&c->rd_fev, NULL); */
-	/* int len = evbuffer_write(c->ev, fd); */
-	/* printf("%d bytes sent\n", len); */
-	/* fflush(stdout); */
-	/* if (len == -1) */
-	/* { */
-	/* 	switch(errno) */
-	/* 	{ */
-
-	/* 	case EAGAIN: */
-	/* 		event_add(&c->wr_fev, NULL); */
-	/* 		return; */
-	/* 	default: */
-	/* 		warn("write"); */
-	/* 		close_connection(c); */
-	/* 		return; */
-	/* 	} */
-		
-	/* } */
-	
-	/* if (EVBUFFER_LENGTH(c->ev) > 0) */
-	/* 	event_add(&c->wr_fev, NULL); */
-
-	/* event_add(&c->rd_fev, NULL); */
-	/* return; */
 }
 
 void
@@ -488,8 +468,6 @@ close_connection(struct conn *c)
 	evbuffer_free(c->ev);
 	event_del(&c->rd_ev);
 	event_del(&c->wr_ev);
-//	event_del(&c->rd_fev);
-//	event_del(&c->wr_fev);
 	free(c->parser);
 	close(EVENT_FD(&c->rd_ev));
 	free(c);
@@ -498,10 +476,8 @@ close_connection(struct conn *c)
 int
 on_url(http_parser *parser, const char *at, size_t length)
 {
-	printf("URL URL URL  \n\n");
 	strncpy(requests[requestNum]->url, at+1, length-1);
 	requests[requestNum]->url[length-1] = '\0'; 
-	printf("\n\n%s\t-%d\n\n", requests[requestNum]->url, requestNum); 
 	fflush(stdout);
 	return 0;
 }	
@@ -509,11 +485,13 @@ on_url(http_parser *parser, const char *at, size_t length)
 /* int */
 /* on_header_field(http_parser *parser, const char *at, size_t length) */
 /* { */
-/* 	requests[requestNum].headerNum++; */
+/* 	requests[requestNum]->headerNum++; */
+/* 	int hNum =  requests[requestNum]->headerNum; */
 /* 	char field[1024]; */
 /* 	strncpy(field, at, length); */
 /* 	field[length] = '\0'; */
-/* 	strncpy(requests[requestNum].headerFields[requests[requestNum].headerNum], field, */
+/* 	printf("header %s: ", field); */
+/* 	strncpy(requests[requestNum]->headerFields[hNum], field, */
 /* 		strlen(field)); */
 /* 	return 0; */
 /* } */
@@ -521,11 +499,12 @@ on_url(http_parser *parser, const char *at, size_t length)
 /* int */
 /* on_header_value(http_parser *parser, const char *at, size_t length) */
 /* { */
-/* 	int hNum =  requests[requestNum].headerNum; */
+/* 	int hNum =  requests[requestNum]->headerNum; */
 /* 	char field[1024]; */
 /* 	strncpy(field, at, length); */
 /* 	field[length] = '\0'; */
-/* 	strncat(requests[requestNum].headerValues[hNum], field, */
+/* 	printf("%s\n", field); */
+/* 	strncat(requests[requestNum]->headerValues[hNum], field, */
 /* 		strlen(field)); */
 /* 	return 0; */
 /* } */
@@ -534,11 +513,38 @@ int
 retrieve_file(char* filepath)
 {
 	/* TODO ensure that the filepath is valid and accessible */
-	char *path = getcwd(NULL, 0);
 
-	/* printf("Trying to retrieve %s from %s\n", filepath, path); */
 	int fd = open(filepath, O_RDONLY);
+	char *path = getcwd(NULL, 0);
+	char *absPath = realpath(filepath, NULL);
+	printf("current path %s retrieval path %s\n%s\n", path,
+	       filepath, realpath(filepath, NULL));
+
+	struct stat st;
+	printf("lstat output %d\n\n", lstat(filepath, &st));
+	if (S_ISLNK(st.st_mode)) {
+		return fd;
+			
+	}
 	
+	if (absPath != NULL) {
+		char *token, *tok, *t1, *t2;
+		token = strtok_r(path, "/", &t1);
+		tok = strtok_r(absPath, "/", &t2);
+		while (token != NULL && tok != NULL) {
+			printf("%s %s\n", token, tok);
+			if (strcmp(token, tok) != 0) {
+				/* If the tokens don't match the file path is forbidden */
+				printf("\nINVALID\n");
+				return -2;
+				break;
+			}
+			token = strtok_r(NULL, "/", &t1);
+			tok = strtok_r(NULL, "/", &t2);
+		}
+		/* printf("Trying to retrieve %s from %s\n", filepath, path); */
+	}
+	printf("file path %d\n", fd);
 	free(path);
 	return fd;
 }
