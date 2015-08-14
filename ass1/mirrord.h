@@ -18,6 +18,7 @@ struct conn {
 	struct event rd_fev;
 	struct event wr_fev;
 	struct evbuffer *ev;
+	char remote_addr[30];
 	off_t fileSize;
 	size_t totalSent;
 	int requestNum;

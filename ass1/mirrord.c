@@ -83,15 +83,14 @@ ack_con(int sock, short revents, void *logfile)
 
 	if (ioctl(fd, FIONBIO, &on) == -1)
 		err(1, "Failed to set nonblocking fd");
-	/* printf("waiting for sem\n"); */
-	sem_wait(&reqSem);
-	/* printf("request number %d\n", requestNum); */
+
 	struct sockaddr_in *s = (struct sockaddr_in *) &ss;
 	char *address = inet_ntoa(s->sin_addr);
-
+	
 	strncpy(requests[requestNum]->remote_addr, address, strlen(address));
 	strncat(requests[requestNum]->remote_addr, "\0", 1);
-	
+
+	printf("%d %s", requestNum, address);
 	requests[requestNum]->headerNum = 0;
 	struct conn *c;
 	c = malloc(sizeof(*c));
@@ -174,7 +173,7 @@ handle_read(int fd, short revents, void* conn)
 		requestNum++;
 		return;
 	}
-
+	sem_post(&reqSem);
 	/* http_parser_execute(c->parser, settings, c->ev->buffer, recvLen); */
 	free(settings);
 	free(req);
@@ -227,7 +226,6 @@ handle_send(int fd, short revents, void* conn)
 	int f = retrieve_file(requests[requestNum]->url);
 	
 	if (f == -1 && errno != ENOENT) {
-		// TODO handle fd open error, send 500 response
 		time(&curr);
 		currtime = gmtime(&curr);
 		char cbuff[30];
@@ -250,15 +248,14 @@ handle_send(int fd, short revents, void* conn)
 		sem_post(&reqSem);
 		close_connection(c);
 		return;
-		/* } else if (f == -2) */
-		/* { */
-		/* 	printf("INVALID SEND 403\n"); */
-		/* 	requestNum++; */
-		/* 	sem_post(&reqSem); */
-		/* 	free(res); */
-		/* 	close_connection(c); */
-		/* 	return; */
-	}
+	/* } else if (f == -2) { */
+	/* 	printf("INVALID SEND 403\n"); */
+	/* 	requestNum++; */
+	/* 	sem_post(&reqSem); */
+	/* 	free(res); */
+	/* 	close_connection(c); */
+	/* 	return; */
+	} 
 	if (c->parser->method == 1) {
 		/* GET request */
 		if (f > 0) {
@@ -463,7 +460,7 @@ send_file(int fd, short revents, void* conn)
 void
 close_connection(struct conn *c)
 {
-	printf("fd %d: closing \n", EVENT_FD(&c->rd_ev));
+	/* printf("fd %d: closing \n", EVENT_FD(&c->rd_ev)); */
 	
 	evbuffer_free(c->ev);
 	event_del(&c->rd_ev);
@@ -512,19 +509,17 @@ on_url(http_parser *parser, const char *at, size_t length)
 int
 retrieve_file(char* filepath)
 {
-	/* TODO ensure that the filepath is valid and accessible */
-
 	int fd = open(filepath, O_RDONLY);
 	char *path = getcwd(NULL, 0);
 	char *absPath = realpath(filepath, NULL);
-	printf("current path %s retrieval path %s\n%s\n", path,
-	       filepath, realpath(filepath, NULL));
+	/* printf("current path %s retrieval path %s\n%s\n", path, */
+	/*        filepath, realpath(filepath, NULL)); */
 
 	struct stat st;
-	printf("lstat output %d\n\n", lstat(filepath, &st));
+	/* printf("lstat output %d\n\n", lstat(filepath, &st)); */
+	lstat(filepath, &st);
 	if (S_ISLNK(st.st_mode)) {
 		return fd;
-			
 	}
 	
 	if (absPath != NULL) {
@@ -532,10 +527,10 @@ retrieve_file(char* filepath)
 		token = strtok_r(path, "/", &t1);
 		tok = strtok_r(absPath, "/", &t2);
 		while (token != NULL && tok != NULL) {
-			printf("%s %s\n", token, tok);
+			/* printf("%s %s\n", token, tok); */
 			if (strcmp(token, tok) != 0) {
 				/* If the tokens don't match the file path is forbidden */
-				printf("\nINVALID\n");
+				/* printf("\nINVALID\n"); */
 				return -2;
 				break;
 			}
@@ -544,7 +539,7 @@ retrieve_file(char* filepath)
 		}
 		/* printf("Trying to retrieve %s from %s\n", filepath, path); */
 	}
-	printf("file path %d\n", fd);
+	/* printf("file path %d\n", fd); */
 	free(path);
 	return fd;
 }
