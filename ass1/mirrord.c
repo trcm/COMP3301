@@ -708,7 +708,8 @@ main(int argc, char *argv[])
 	}
 	dirname = argv[argc - 1];
 	if (chdir(dirname) == -1) {
-		err(1, "Could not change to directory");
+		usage();
+		/* err(1, "Could not change to directory"); */
 	}
 
 	if (daemonize) {
