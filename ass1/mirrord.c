@@ -88,10 +88,9 @@ ack_con(int sock, short revents, void *logfile)
 	printf("request number %d\n", requestNum);
 	struct sockaddr_in *s = (struct sockaddr_in *) &ss;
 	char *address = inet_ntoa(s->sin_addr);
-	
-	strncat(requests[requestNum]->remote_addr, "\0", 1);
-	strncat(requests[requestNum]->remote_addr, address, strlen(address));
 
+	strncpy(requests[requestNum]->remote_addr, address, strlen(address));
+	strncat(requests[requestNum]->remote_addr, "\0", 1);
 	
 	requests[requestNum]->headerNum = 0;
 	struct conn *c;
@@ -198,10 +197,10 @@ handle_send(int fd, short revents, void* conn)
 	switch (c->parser->method)
 	{
 	case 1:
-		strncpy(requests[requestNum]->method, "GET", 3);
+		strncpy(requests[requestNum]->method, "GET\0", 4);
 		break;
 	case 2:
-		strncpy(requests[requestNum]->method, "HEAD", 4);
+		strncpy(requests[requestNum]->method, "HEAD\0", 5);
 		break;
 	default:
 		/* method not supported */
@@ -427,6 +426,8 @@ read_file(int fd, short revents, void* conn)
 	if (c->totalSent == (size_t)c->fileSize) {
 		printf("equal");
 		close(fd);
+		event_del(&c->rd_fev);
+		event_del(&c->wr_fev);
 		close_connection(c);
 		return;
 	}
@@ -487,8 +488,8 @@ close_connection(struct conn *c)
 	evbuffer_free(c->ev);
 	event_del(&c->rd_ev);
 	event_del(&c->wr_ev);
-	event_del(&c->rd_fev);
-	event_del(&c->wr_fev);
+//	event_del(&c->rd_fev);
+//	event_del(&c->wr_fev);
 	free(c->parser);
 	close(EVENT_FD(&c->rd_ev));
 	free(c);
@@ -497,10 +498,10 @@ close_connection(struct conn *c)
 int
 on_url(http_parser *parser, const char *at, size_t length)
 {
-	printf("URL URL URL\n\n");
+	printf("URL URL URL  \n\n");
 	strncpy(requests[requestNum]->url, at+1, length-1);
-	requests[requestNum]->url[length] = '\0'; 
-	/* printf("\n\n%s\t-%d\n\n", requests[requestNum].url, requestNum); */
+	requests[requestNum]->url[length-1] = '\0'; 
+	printf("\n\n%s\t-%d\n\n", requests[requestNum]->url, requestNum); 
 	fflush(stdout);
 	return 0;
 }	
