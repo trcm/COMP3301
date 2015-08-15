@@ -2,11 +2,11 @@
 
 #define MAX_SIZE 2048
 
-typedef struct request {
-	char url[50];
-	char host[MAX_SIZE];
-	char remote_addr[16];
+typedef struct _request {
 	char method[MAX_SIZE];
+	char host[MAX_SIZE];
+	char url[50];
+	char remote_addr[16];
 	char headerFields[30][30];
 	char headerValues[30][30];
 	int headerNum;
@@ -18,18 +18,17 @@ struct conn {
 	struct event rd_fev;
 	struct event wr_fev;
 	struct evbuffer *ev;
+	struct http_parser *parser;
 	char remote_addr[30];
 	off_t fileSize;
 	int reqNum;
 	size_t totalSent;
 	int requestNum;
-	struct http_parser *parser;
 };
 
 
-int		 on_complete(http_parser *);
 int		 on_url(http_parser *, const char *, size_t);
-int 		 start_mirror(FILE *, char *, char *);
+int 		 start_mirror(FILE *, char *, char *, int);
 void 		 ack_con  (int, short, void *);
 int 		 print_to_log(char *);
 int		 on_complete(http_parser *);
