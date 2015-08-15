@@ -79,7 +79,7 @@ ack_con(int sock, short revents, void *logfile)
 		}
 		
 	}
-	printf("connection\n");
+	/* printf("connection\n"); */
 
 	if (ioctl(fd, FIONBIO, &on) == -1)
 		err(1, "Failed to set nonblocking fd");
@@ -87,15 +87,20 @@ ack_con(int sock, short revents, void *logfile)
 	struct sockaddr_in *s = (struct sockaddr_in *) &ss;
 	char *address = inet_ntoa(s->sin_addr);
 	
-	strncpy(requests[requestNum]->remote_addr, address, strlen(address));
-	strncat(requests[requestNum]->remote_addr, "\0", 1);
+	/* strncpy(requests[requestNum]->remote_addr, address, strlen(address)); */
+	/* strncat(requests[requestNum]->remote_addr, "\0", 1); */
 
-	printf("%d %s", requestNum, address);
-	requests[requestNum]->headerNum = 0;
+	/* printf("%d %s\n", requestNum, address); */
+	/* requests[requestNum]->headerNum = 0; */
 	struct conn *c;
 	c = malloc(sizeof(*c));
 	c->ev = evbuffer_new();
 	c->parser = malloc(sizeof(struct http_parser));
+
+	strncpy(c->remote_addr, address, strlen(address)+1);
+	c->remote_addr[strlen(c->remote_addr)] = '\0';
+	/* strncat(c->remote_addr, "\0", 1); */
+
 	/* check if the connection has been closed prematurely */
 	/* int peek = recv(fd, req, 50, MSG_PEEK); */
 	/* if (peek > 0) { */
@@ -106,35 +111,6 @@ ack_con(int sock, short revents, void *logfile)
 	event_set(&c->wr_ev, fd, EV_WRITE , handle_send, c);	
 
 	event_add(&c->rd_ev, NULL);
-	/* int peek = recv(fd, req, 50, MSG_PEEK); */
-	/* if (peek > 0) { */
-	/* 	do { */
-	/* 		recvLen = recv(fd, req, 50, 0); */
-	/* 		printf("recv len %d\n", recvLen); */
-	/* 		http_parser_execute(c->parser, settings, req, recvLen); */
-	/* 	} while (recvLen > 0); */
-
-	/* 	/\* http_parser_execute(c->parser, settings, req, recvLen); *\/ */
-
-		
-	/* } else { */
-	/* 	/\* connection ended before the http request was sent *\/ */
-	/* 	/\* send and log response *\/ */
-	/* 	time_t curr; */
-	/* 	struct tm *currtime; */
-	/* 	time(&curr); */
-	/* 	currtime = gmtime(&curr); */
-	/* 	char cbuff[30]; */
-	/* 	strftime(cbuff, 30, "%a, %d %b %Y %T GMT", currtime); */
-	/* 	char *entry = create_log_entry(requests[requestNum].remote_addr, */
-	/* 				       cbuff, "-", "-", 444, 0); */
-	/* 	print_to_log(entry); */
-	/* 	requestNum++; */
-	/* 	sem_post(&reqSem); */
-	/* 	close_connection(c); */
-	/* 	return; */
-	/* } */
-	
 }
 
 void
@@ -144,35 +120,63 @@ handle_read(int fd, short revents, void* conn)
 	ssize_t recvLen;
 	/* http_parser * hp = malloc(sizeof(http_parser)); */
 	http_parser_settings * settings = malloc(sizeof(http_parser_settings));
-
 	http_parser_settings_init(settings);
 	char *req = malloc(sizeof(char) * 4096);
 	/* char req[4096]; */
-	/* settings->on_headers_complete = on_complete; */
-	/* settings->on_header_field = on_header_field; */
-	/* settings->on_header_value = on_header_value; */
-	settings->on_url = on_url;
 
+	settings->on_url = on_url;
 	http_parser_init(c->parser, HTTP_REQUEST);
-	c->parser->data = &fd;
-	/* do { */
-	/* printf("wait read\n"); */
-	recvLen = recv(fd, req, 4096, 0);
-	/* printf("%zu\n", recvLen); */
-	/* recvLen = evbuffer_read(c->ev, fd, 4096); */
-	/* } while (recvLen > 0); */
-	ssize_t parsed = http_parser_execute(c->parser, settings, req, recvLen);
+
+	sem_wait(&reqSem);
+	requestNum++;
+
+	/* printf("got sem\n"); */
+	c->reqNum = requestNum;
+	c->parser->data = &requestNum;
+
+	/* printf("this is connection number %d\n", c->reqNum); */
+	/* c->parser->data = &fd; */
+	sem_post(&reqSem);
+	int peek = recv(fd, req, 50, MSG_PEEK);
+
+	if (peek > 0) {
+		/* do { */
+		/* printf("wait read\n"); */
+		recvLen = recv(fd, req, 4096, 0);
+		/* printf("%zu\n", recvLen); */
+		/* recvLen = evbuffer_read(c->ev, fd, 4096); */
+		/* } while (recvLen > 0); */
+		ssize_t parsed = http_parser_execute(c->parser, settings, req, recvLen);
 	
-	/* printf("%zu %zu\n", recvLen, parsed); */
-	if (recvLen != parsed) {
-		printf("%d errno", c->parser->http_errno);
-		printf("%s\n", http_errno_name(c->parser->http_errno));
-		printf("%s\n", http_errno_description(c->parser->http_errno));
-		close_connection(c);
+		/* printf("%zu %zu\n", recvLen, parsed); */
+		if (recvLen != parsed) {
+			printf("%d errno", c->parser->http_errno);
+			printf("%s\n", http_errno_name(c->parser->http_errno));
+			printf("%s\n", http_errno_description(c->parser->http_errno));
+			close_connection(c);
+			sem_post(&reqSem);
+			/* requestNum++; */
+			return;
+		}
+	} else {
+		/* connection ended before the http request was sent */
+		/* send and log response */
+		time_t curr;
+		struct tm *currtime;
+		time(&curr);
+		currtime = gmtime(&curr);
+		char cbuff[30];
+		strftime(cbuff, 30, "%a, %d %b %Y %T GMT", currtime);
+		char *entry = create_log_entry(c->remote_addr,
+					       cbuff, "-", "-", 444, 0);
+		print_to_log(entry);
+		/* requestNum++; */
 		sem_post(&reqSem);
-		requestNum++;
+		close_connection(c);
 		return;
+		
 	}
+	/* requestNum++; */
 	sem_post(&reqSem);
 	/* http_parser_execute(c->parser, settings, c->ev->buffer, recvLen); */
 	free(settings);
@@ -188,24 +192,22 @@ handle_send(int fd, short revents, void* conn)
 
 	struct conn *c = conn;
 	char *res = malloc(sizeof(char)*1024);
-	struct tm *currtime;
-	time_t curr;
+	/* struct tm *currtime; */
+	/* time_t curr; */
+	char *cbuff;
 
 	switch (c->parser->method)
 	{
 	case 1:
-		strncpy(requests[requestNum]->method, "GET\0", 4);
+		strncpy(requests[c->reqNum]->method, "GET\0", 4);
 		break;
 	case 2:
-		strncpy(requests[requestNum]->method, "HEAD\0", 5);
+		strncpy(requests[c->reqNum]->method, "HEAD\0", 5);
 		break;
 	default:
 		/* method not supported */
 		/* log, send respone and return */
-		time(&curr);
-		currtime = gmtime(&curr);
-		char cbuff[30];
-		strftime(cbuff, 30, "%a, %d %b %Y %T GMT", currtime);
+		cbuff = get_current_time();
 		asprintf(&res,  
 			 "HTTP/1.0 405 Method not allowed\n"	    \
 			 "Date: %s\n" \
@@ -213,23 +215,18 @@ handle_send(int fd, short revents, void* conn)
 			 "Server: mirrord/s4333060\n" \
 			 "\r\n", cbuff);
 		send(fd, res, strlen(res), MSG_NOSIGNAL);
-		char *entry = create_log_entry(requests[requestNum]->remote_addr, cbuff, "-",
-					       requests[requestNum]->url, 405, 0);
+		char *entry = create_log_entry(c->remote_addr, cbuff, "-",
+					       requests[c->reqNum]->url, 405, 0);
 		print_to_log(entry);
-		requestNum++;
 		
-		sem_post(&reqSem);
 		free(res);
 		close_connection(c);
 		return;
 	}
-	int f = retrieve_file(requests[requestNum]->url);
+	int f = retrieve_file(requests[c->reqNum]->url);
 	
 	if (f == -1 && errno != ENOENT) {
-		time(&curr);
-		currtime = gmtime(&curr);
-		char cbuff[30];
-		strftime(cbuff, 30, "%a, %d %b %Y %T GMT", currtime);
+		cbuff = get_current_time();
 		asprintf(&res,
 			 "HTTP/1.0 500 Internal Server Error\n"  \
 			 "Date: %s\n" \
@@ -239,12 +236,12 @@ handle_send(int fd, short revents, void* conn)
 		send(fd, res, strlen(res), MSG_NOSIGNAL);
 
 		// TODO get the parser method
-		char *entry = create_log_entry(requests[requestNum]->remote_addr, cbuff, "-",
-					       requests[requestNum]->url, 500, 0);
+		char *entry = create_log_entry(c->remote_addr, cbuff, "-",
+					       requests[c->reqNum]->url, 500, 0);
 		print_to_log(entry);
 		free(entry);
 		free(res);
-		requestNum++;
+		/* requestNum++; */
 		sem_post(&reqSem);
 		close_connection(c);
 		return;
@@ -266,13 +263,9 @@ handle_send(int fd, short revents, void* conn)
 			// TODO fix mod time properly
 			struct tm *modtime;
 			modtime = localtime(&st.st_mtime);
-			time(&curr);
-			currtime = gmtime(&curr);
 			char buff[30];
-			char cbuff[30];
 			strftime(buff, 30, "%a, %d %b %Y %T GMT", modtime);
-			strftime(cbuff, 30, "%a, %d %b %Y %T GMT", currtime);
-
+			cbuff = get_current_time();
 			/* create response header */
 			asprintf(&res,
 				 "HTTP/1.0 200 OK\n"	    \
@@ -285,19 +278,14 @@ handle_send(int fd, short revents, void* conn)
 			int sendLen = 0;
 			/* send response header */
 			sendLen = send(fd, res, strlen(res), MSG_NOSIGNAL);
-			char *entry = create_log_entry(requests[requestNum]->remote_addr, cbuff, requests[requestNum]->method,
-						       requests[requestNum]->url, 200, st.st_size);
+			char *entry = create_log_entry(c->remote_addr, cbuff, requests[c->reqNum]->method,
+						       requests[c->reqNum]->url, 200, st.st_size);
 
 			/* /\* start reading file  *\/ */
-			/* void * fData = malloc(sizeof(char*) * CHUNK); */
 			
 			evbuffer_free(c->ev);
 			c->ev = evbuffer_new();
 			c->totalSent = 0;
-			/* size_t len; */
-			/* size_t total = 0; */
-			requestNum++;
-			sem_post(&reqSem);
 
 			c->fileSize = st.st_size;
 
@@ -307,14 +295,6 @@ handle_send(int fd, short revents, void* conn)
 
 			event_add(&c->rd_fev, NULL);
 
-			/* do { */
-			/*  len = evbuffer_read(c->ev, f, 4096); */
-			/*  while (EVBUFFER_LENGTH(c->ev) > 0) { */
-			/* 	evbuffer_write(c->ev, fd); */
-			/*  } */
-			/*  total = total + len; */
-			/* } while (total < (size_t)st.st_size); */
-			
 			print_to_log(entry);
 
 			/* 	free(fData); */
@@ -329,15 +309,12 @@ handle_send(int fd, short revents, void* conn)
 				"\r\n";
 
 			/* create time buffers for headers and log */
-			time(&curr);
-			currtime = gmtime(&curr);
-			char cbuff[30];
-			strftime(cbuff, 30, "%a, %d %b %Y %T GMT", currtime);
+			cbuff = get_current_time();
 
 			fflush(stdout);
 
-			char *entry = create_log_entry(requests[requestNum]->remote_addr, cbuff, requests[requestNum]->method,
-						       requests[requestNum]->url, 404, 0);
+			char *entry = create_log_entry(c->remote_addr, cbuff, requests[c->reqNum]->method,
+						       requests[c->reqNum]->url, 404, 0);
 			print_to_log(entry);
 			send(fd, res, strlen(res), MSG_NOSIGNAL);
 			sem_post(&reqSem);
@@ -351,19 +328,12 @@ handle_send(int fd, short revents, void* conn)
 			struct stat st;
 			fstat(f, &st);
 
-
 			/* create time buffers for headers and log */
 			struct tm *modtime;
 			modtime = localtime(&st.st_mtime);
-			printf("%s\n", ctime(&st.st_mtime));
-			fflush(stdout);
-			time(&curr);
-			currtime = gmtime(&curr);
 			char buff[30];
-			char cbuff[30];
 			strftime(buff, 30, "%a, %d %b %Y %T GMT", modtime);
-			strftime(cbuff, 30, "%a, %d %b %Y %T GMT", currtime);
-
+			cbuff = get_current_time();
 			/* create response header */
 			asprintf(&res,  
 				 "HTTP/1.0 200 OK\n"	    \
@@ -377,13 +347,13 @@ handle_send(int fd, short revents, void* conn)
 			/* send response header */
 			sendLen = send(fd, res, strlen(res), MSG_NOSIGNAL);
 
-			char *entry = create_log_entry(requests[requestNum]->remote_addr, cbuff, requests[requestNum]->method,
-						       requests[requestNum]->url, 200, 0);
+			char *entry = create_log_entry(c->remote_addr, cbuff, requests[c->reqNum]->method,
+						       requests[c->reqNum]->url, 200, 0);
 			print_to_log(entry);
 
 			/* free(fData); */
 			free(res);
-			sem_post(&reqSem);
+			/* sem_post(&reqSem); */
 			close_connection(c);
 			return;
 		} else {
@@ -394,15 +364,12 @@ handle_send(int fd, short revents, void* conn)
 				"\r\n";
 
 			/* create time buffers for headers and log */
-			time(&curr);
-			currtime = gmtime(&curr);
-			char cbuff[30];
-			strftime(cbuff, 30, "%a, %d %b %Y %T GMT", currtime);
+			cbuff = get_current_time();
 
 			fflush(stdout);
 
-			char *entry = create_log_entry(requests[requestNum]->remote_addr, cbuff, requests[requestNum]->method,
-						       requests[requestNum]->url, 404, 0);
+			char *entry = create_log_entry(c->remote_addr, cbuff, requests[c->reqNum]->method,
+						       requests[c->reqNum]->url, 404, 0);
 			print_to_log(entry);
 			send(fd, res, strlen(res), MSG_NOSIGNAL);
 			sem_post(&reqSem);
@@ -461,7 +428,6 @@ void
 close_connection(struct conn *c)
 {
 	/* printf("fd %d: closing \n", EVENT_FD(&c->rd_ev)); */
-	
 	evbuffer_free(c->ev);
 	event_del(&c->rd_ev);
 	event_del(&c->wr_ev);
@@ -473,8 +439,12 @@ close_connection(struct conn *c)
 int
 on_url(http_parser *parser, const char *at, size_t length)
 {
-	strncpy(requests[requestNum]->url, at+1, length-1);
-	requests[requestNum]->url[length-1] = '\0'; 
+	int * num = parser->data;
+	/* strncpy(requests[parser->data]->url, at+1, length-1); */
+	/* requests[parser->data]->url[length-1] = '\0';  */
+	strncpy(requests[*num]->url, at+1, length-1);
+	requests[*num]->url[length] = '\0';
+	/* printf("This is the url for connection num %d :\t\t %s\n", *num, requests[*num]->url); */
 	fflush(stdout);
 	return 0;
 }	
@@ -558,6 +528,19 @@ create_log_entry(char *hostname, char *currentTime, char *method, char *url,
 	return entry;
 }
 
+char*
+get_current_time(void)
+{
+	
+	struct tm *currtime;
+	time_t curr;
+	time(&curr);
+	currtime = gmtime(&curr);
+	char *cbuff = malloc(sizeof(char) * 30);
+	strftime(cbuff, 30, "%a, %d %b %Y %T GMT", currtime);
+	return cbuff;
+}
+
 int
 start_mirror(FILE *logfile, char *hostname, char *port)
 {
@@ -624,7 +607,7 @@ main(int argc, char *argv[])
 		requests[i] = malloc(sizeof(request));
 		
 	}
-	sem_init(&reqSem, 0, 2);
+	sem_init(&reqSem, 0, 1);
 	
 	/* settings = malloc(sizeof(struct http_parser_settings)); */
 

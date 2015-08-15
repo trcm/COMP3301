@@ -20,6 +20,7 @@ struct conn {
 	struct evbuffer *ev;
 	char remote_addr[30];
 	off_t fileSize;
+	int reqNum;
 	size_t totalSent;
 	int requestNum;
 	struct http_parser *parser;
@@ -35,6 +36,7 @@ int		 retrieve_file(char*);
 int		 on_header_field(http_parser*, const char*, size_t);
 int		 on_header_value(http_parser*, const char*, size_t);
 char*		 create_log_entry(char*, char*, char*, char*, int, int);
+char*		 get_current_time(void);
 void 		 handle_read(int, short, void*);
 void 		 handle_send(int, short, void*);
 void 		 read_file(int, short, void*);
