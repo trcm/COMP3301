@@ -18,6 +18,7 @@
 #include <errno.h>
 #include <err.h>
 #include <semaphore.h>
+#include <signal.h>
 #include <string.h>
 
 /* #include "http-parser/http_parser.h" */
@@ -395,7 +396,6 @@ read_file(int fd, short revents, void* conn)
 	if (EVBUFFER_LENGTH(c->ev) > 0)
 		return;
 
-	/* printf("sent %zu size %zu\n", c->totalSent, (size_t)c->fileSize); */
 	if (c->totalSent == (size_t)c->fileSize) {
 		close(fd);
 		event_del(&c->rd_fev);
@@ -404,15 +404,10 @@ read_file(int fd, short revents, void* conn)
 		return;
 	}
 	size_t len = 0;
-	/* do { */
+
 	len = evbuffer_read(c->ev, fd, 4096);
 	c->totalSent = c->totalSent + len;
 	
-	/*  while (EVBUFFER_LENGTH(c->ev) > 0) { */
-	/* 	evbuffer_write(c->ev, fd); */
-	/*  } */
-	/*  total = total + len; */
-	/* } while (total < (size_t)st.st_size); */
 	event_add(&c->wr_fev, NULL);
 }
 
@@ -421,7 +416,17 @@ send_file(int fd, short revents, void* conn)
 {
 	struct conn * c = conn;
 	while (EVBUFFER_LENGTH(c->ev) > 0)
-		evbuffer_write(c->ev, fd);
+	{
+		int sent = evbuffer_write(c->ev, fd);
+		if (sent == -1 && errno == EPIPE)
+		{
+			close(fd);
+			event_del(&c->rd_fev);
+			event_del(&c->wr_fev);
+			close_connection(c);
+			return;
+		}
+	}
 }
 
 void
@@ -588,6 +593,7 @@ start_mirror(FILE *logfile, char *hostname, char *port)
 	return 0;
 }
 
+
 int
 main(int argc, char *argv[])
 {
@@ -608,8 +614,8 @@ main(int argc, char *argv[])
 		
 	}
 	sem_init(&reqSem, 0, 1);
-	
 	/* settings = malloc(sizeof(struct http_parser_settings)); */
+	signal(SIGPIPE, SIG_IGN);
 
 	/* http_parser_settings_init(settings); */
 	/* Setup http_parser settings callbacks */
