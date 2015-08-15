@@ -443,7 +443,7 @@ on_url(http_parser *parser, const char *at, size_t length)
 	/* strncpy(requests[parser->data]->url, at+1, length-1); */
 	/* requests[parser->data]->url[length-1] = '\0';  */
 	strncpy(requests[*num]->url, at+1, length-1);
-	requests[*num]->url[length] = '\0';
+	requests[*num]->url[length - 1] = '\0';
 	/* printf("This is the url for connection num %d :\t\t %s\n", *num, requests[*num]->url); */
 	fflush(stdout);
 	return 0;
