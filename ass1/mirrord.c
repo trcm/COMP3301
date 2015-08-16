@@ -117,7 +117,8 @@ handle_read(int fd, short revents, void *conn)
 	/* String to hold the request from the client */
 	char *req;
 	http_parser_settings *settings;
-	ssize_t recvLen;
+	int peek;
+	ssize_t recvLen, parsed;
 
 	req = malloc(sizeof(char) * 4096);
 	
@@ -138,20 +139,25 @@ handle_read(int fd, short revents, void *conn)
 	sem_post(&reqSem);
 
 	/* Check to see if the connection is still alive */
-	int peek = recv(fd, req, 50, MSG_PEEK);
+	peek = recv(fd, req, 50, MSG_PEEK);
 	if (peek > 0) {
 		recvLen = recv(fd, req, 4096, 0);
-		ssize_t parsed = http_parser_execute(c->parser, settings, req, recvLen);
+		parsed = http_parser_execute(c->parser, settings, req, recvLen);
 
-		/* ensure that the data parsed is the same as the data recieved */
-		if (recvLen != parsed) {
+		/* 
+		 * ensure that the data parsed is the same as the data recieved.
+		 * Also check to make sure the parser->http_errno was not set
+		 */
+
+		if (recvLen != parsed || c->parser->http_errno) {
 			printf("%d errno", c->parser->http_errno);
 			printf("%s\n", http_errno_name(c->parser->http_errno));
 			printf("%s\n", http_errno_description(c->parser->http_errno));
+
 			close_connection(c);
-			sem_post(&reqSem);
 			return;
 		}
+			
 	} else {
 		/* connection ended before the http request was sent */
 		/* send and log response */
@@ -359,7 +365,7 @@ handle_send(int fd, short revents, void *conn)
 			print_to_log(entry);
 			send(fd, res, strlen(res), MSG_NOSIGNAL);
 
-			free(res);
+			/* free(res); */
 			close_connection(c);
 			return;
 		}
