@@ -10,6 +10,8 @@ struct request {
 	char headerFields[30][30];
 	char headerValues[30][30];
 	int headerNum;
+	int body;
+	TAILQ_ENTRY(request) requestsQueue;
 };
 
 
@@ -28,13 +30,14 @@ struct conn {
 };
 
 
-int		 on_url(http_parser *, const char *, size_t);
-int 		 start_mirror(FILE *, char *, char *, int);
-void 		 ack_con (int, short, void *);
-int 		 print_to_log(char *);
-int		 on_complete(http_parser *);
+int		 on_url(http_parser*, const char*, size_t);
+int		 on_body(http_parser*, const char*, size_t);
+int 		 start_mirror(FILE*, char*, char*, int);
+void 		 ack_con (int, short, void*);
+int 		 print_to_log(char*);
+int		 on_complete(http_parser*);
 int		 retrieve_file(char*);
-char*		 create_log_entry(char*, char*, char*, char*, int, int);
+char*		 create_log_entry(char*, char*, const char*, char*, int, int);
 char*		 get_current_time(void);
 void 		 handle_read(int, short, void*);
 void 		 handle_send(int, short, void*);

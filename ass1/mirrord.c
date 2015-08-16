@@ -4,6 +4,7 @@
 #include <sys/ioctl.h>
 #include <sys/mman.h>
 #include <sys/wait.h>
+#include <sys/queue.h>
 #include <arpa/inet.h>
 #include <netinet/in.h>
 
@@ -35,7 +36,7 @@ int logFlag;
 sem_t reqSem;
 /* Pointer to the mirrord logfile */
 FILE *logptr;
-
+TAILQ_HEAD(listhead, request) head;
 
 /* Simple usage function to be printed if invalid command line arguments are supplied */
 __dead void
@@ -56,7 +57,7 @@ print_to_log(char *message)
 		fflush(stdout);
 	} else if (logptr) {
 		/* Process has been daemonized, output to the logfile. */
-		/* This could potentially be null. */
+
 		fprintf(logptr, "%s", message);
 		fflush(logptr);
 	}
@@ -77,8 +78,7 @@ ack_con(int sock, short revents, void *logfile)
 	if (fd == -1) {
 		switch (errno) {
 		case ECONNABORTED:
-			/* TODO handle disconnect */
-			printf("connetion abort");
+			/* Connection aborted */
 			return;
 		default:
 			err(1, "An error occured while accepting the connection");
@@ -119,24 +119,30 @@ handle_read(int fd, short revents, void *conn)
 	http_parser_settings *settings;
 	int peek;
 	ssize_t recvLen, parsed;
-
+	char *res, *cbuff, *entry;
 	req = malloc(sizeof(char) * 4096);
-	
+	res = malloc(sizeof(char) * 100);
+
 	/* Setup settings for the http parser */
 	settings = malloc(sizeof(http_parser_settings));
 	http_parser_settings_init(settings);
 	
 	settings->on_url = on_url;
+	settings->on_body = on_body;
 	http_parser_init(c->parser, HTTP_REQUEST);
 
 	/* Critical section of code  */
 	/* Grab the semaphore and assign an incomming connection a particular request number. */
 		
-	sem_wait(&reqSem);
+	/* sem_wait(&reqSem); */
+
+	struct request * n = malloc(sizeof(struct request));
+	TAILQ_INSERT_TAIL(&head, n, requestsQueue);
 	requestNum++;
-	c->reqNum = requestNum;
-	c->parser->data = &requestNum;
-	sem_post(&reqSem);
+	/* c->reqNum = requestNum; */
+	/* c->parser->data = &requestNum; */
+	c->parser->data = n;
+	/* sem_post(&reqSem); */
 
 	/* Check to see if the connection is still alive */
 	peek = recv(fd, req, 50, MSG_PEEK);
@@ -146,28 +152,43 @@ handle_read(int fd, short revents, void *conn)
 
 		/* 
 		 * ensure that the data parsed is the same as the data recieved.
-		 * Also check to make sure the parser->http_errno was not set
+		 * Also check to make sure the parser->http_errno was not set, and
+		 * if the request is in valid by having a body.
 		 */
+/* || n->body) { */
+		if (recvLen != parsed || c->parser->http_errno) { 
+			//TODO send 400 bad request
+			// TODO check error number then 400
+			cbuff = get_current_time();
 
-		if (recvLen != parsed || c->parser->http_errno) {
-			printf("%d errno", c->parser->http_errno);
-			printf("%s\n", http_errno_name(c->parser->http_errno));
-			printf("%s\n", http_errno_description(c->parser->http_errno));
+			asprintf(&res,
+				 "HTTP/1.0 400 Bad request\n" \
+				 "Date: %s\n" \
+				 "Connection: close\n" \
+				 "Server: mirrord/s4333060\n" \
+				 "\r\n", cbuff);
 
+			send(fd, res, strlen(res), MSG_NOSIGNAL);
+			// TODO get the method
+			/* printf("%s\n", http_method_str(c->parser->method)); */
+			const char *method = http_method_str(c->parser->method);
+			entry = create_log_entry(c->remote_addr,
+			   cbuff, method, n->url, 400, 0);
+			print_to_log(entry);
+			/* printf("%d errno", c->parser->http_errno); */
+			/* printf("%s\n", http_errno_name(c->parser->http_errno)); */
+			/* printf("%s\n", http_errno_description(c->parser->http_errno)); */
+			free(req);
+			free(res);
 			close_connection(c);
 			return;
-		}
+		} 
 			
 	} else {
 		/* connection ended before the http request was sent */
 		/* send and log response */
-		time_t 		curr;
-		struct tm      *currtime;
-		time(&curr);
-		currtime = gmtime(&curr);
-		char 		cbuff    [30];
-		strftime(cbuff, 30, "%a, %d %b %Y %T GMT", currtime);
-		char           *entry = create_log_entry(c->remote_addr,
+		cbuff = get_current_time();
+		entry = create_log_entry(c->remote_addr,
 						   cbuff, "-", "-", 444, 0);
 		print_to_log(entry);
 		close_connection(c);
@@ -187,24 +208,26 @@ handle_send(int fd, short revents, void *conn)
 {
 
 	struct conn *c = conn;
+	struct request *r = c->parser->data;
+	const char *method;
 	char *res, *cbuff;
 	int f, sendLen;
 	char *entry;
 	struct stat st;
 	struct tm *modtime;
 	char buff[30];
-	char *method;
 
 	c = conn;
 	res = malloc(sizeof(char) * 1024);
-
+	method = http_method_str(c->parser->method);
+	/* printf("%s %d\n", http_method_str(c->parser->method), r->body); */
 	/* check the method of the connections request */
 	switch (c->parser->method) {
 	case 1:
-		strncpy(requests[c->reqNum]->method, "GET\0", 4);
+		strncpy(r->method, "GET\0", 4);
 		break;
 	case 2:
-		strncpy(requests[c->reqNum]->method, "HEAD\0", 5);
+		strncpy(r->method, "HEAD\0", 5);
 		break;
 	default:
 		/* method not supported */
@@ -218,15 +241,17 @@ handle_send(int fd, short revents, void *conn)
 			 "\r\n", cbuff);
 		send(fd, res, strlen(res), MSG_NOSIGNAL);
 		entry = create_log_entry(c->remote_addr, cbuff, "-",
-					  requests[c->reqNum]->url, 405, 0);
+					  r->url, 405, 0);
 		print_to_log(entry);
+		free(entry);
 		free(res);
 		close_connection(c);
 		return;
 	}
 
 	/* Try and retrieve the file requested */
-	f = retrieve_file(requests[c->reqNum]->url);
+	/* f = retrieve_file(requests[c->reqNum]->url); */
+	f = retrieve_file(r->url);
 
 	/* There was an error with retrieving the file, send a 500 reponse */
 	if (f == -1 && errno != ENOENT) {
@@ -246,11 +271,11 @@ handle_send(int fd, short revents, void *conn)
 			method = "HEAD\0";
 		}
 		entry = create_log_entry(c->remote_addr, cbuff, method,
-		    requests[c->reqNum]->url, 500, 0);
+		    r->url, 500, 0);
 		print_to_log(entry);
 		free(entry);
 		free(res);
-		sem_post(&reqSem);
+		free(entry);
 		close_connection(c);
 		return;
 		/* } else if (f == -2) { */
@@ -270,7 +295,7 @@ handle_send(int fd, short revents, void *conn)
 
 			/* create time buffers for headers and log */
 			modtime = localtime(&st.st_mtime);
-			strftime(buff, 30, "%a, %d %b %Y %T GMT", modtime);
+			strftime(buff, 30, "%a, %d %b %Y %T %Z", modtime);
 			cbuff = get_current_time();
 			/* create response header */
 			asprintf(&res,
@@ -284,8 +309,10 @@ handle_send(int fd, short revents, void *conn)
 			sendLen = 0;
 			/* send response header */
 			sendLen = send(fd, res, strlen(res), MSG_NOSIGNAL);
-			entry = create_log_entry(c->remote_addr, cbuff, requests[c->reqNum]->method,
-				 requests[c->reqNum]->url, 200, st.st_size);
+			/* entry = create_log_entry(c->remote_addr, cbuff, requests[c->reqNum]->method, */
+			/* 	 requests[c->reqNum]->url, 200, st.st_size); */
+			entry = create_log_entry(c->remote_addr, cbuff, r->method,
+				 r->url, 200, st.st_size);
 
 			/* start reading the file */
 			evbuffer_free(c->ev);
@@ -313,11 +340,12 @@ handle_send(int fd, short revents, void *conn)
 
 			fflush(stdout);
 
-			entry = create_log_entry(c->remote_addr, cbuff, requests[c->reqNum]->method,
-					  requests[c->reqNum]->url, 404, 0);
+			entry = create_log_entry(c->remote_addr, cbuff, r->method,
+					  r->url, 404, 0);
 			print_to_log(entry);
 			send(fd, res, strlen(res), MSG_NOSIGNAL);
-			sem_post(&reqSem);
+
+			free(entry);
 			close_connection(c);
 			return;
 		}
@@ -328,7 +356,7 @@ handle_send(int fd, short revents, void *conn)
 			fstat(f, &st);
 			/* create time buffers for headers and log */
 			modtime = localtime(&st.st_mtime);
-			strftime(buff, 30, "%a, %d %b %Y %T GMT", modtime);
+			strftime(buff, 30, "%a, %d %b %Y %T %Z", modtime);
 			cbuff = get_current_time();
 			/* create response header */
 			asprintf(&res,
@@ -343,10 +371,11 @@ handle_send(int fd, short revents, void *conn)
 			/* send response header */
 			sendLen = send(fd, res, strlen(res), MSG_NOSIGNAL);
 
-			entry = create_log_entry(c->remote_addr, cbuff, requests[c->reqNum]->method,
-					  requests[c->reqNum]->url, 200, 0);
+			entry = create_log_entry(c->remote_addr, cbuff, r->method,
+					  r->url, 200, 0);
 			print_to_log(entry);
 
+			free(entry);
 			free(res);
 			close_connection(c);
 			return;
@@ -360,12 +389,13 @@ handle_send(int fd, short revents, void *conn)
 			/* create time buffers for headers and log */
 			cbuff = get_current_time();
 
-			entry = create_log_entry(c->remote_addr, cbuff, requests[c->reqNum]->method,
-			    requests[c->reqNum]->url, 404, 0);
+			entry = create_log_entry(c->remote_addr, cbuff, r->method,
+			    r->url, 404, 0);
 			print_to_log(entry);
 			send(fd, res, strlen(res), MSG_NOSIGNAL);
 
 			/* free(res); */
+			free(entry);
 			close_connection(c);
 			return;
 		}
@@ -426,6 +456,9 @@ send_file(int fd, short revents, void *conn)
 void
 close_connection(struct conn * c)
 {
+	struct request *r = c->parser->data;
+	TAILQ_REMOVE(&head, r, requestsQueue);
+	free(c->parser->data);
 	evbuffer_free(c->ev);
 	event_del(&c->rd_ev);
 	event_del(&c->wr_ev);
@@ -439,14 +472,26 @@ int
 on_url(http_parser * parser, const char *at, size_t length)
 {
 	/* Request number for the connection */
-	int *num = parser->data;
-
-	strncpy(requests[*num]->url, at + 1, length - 1);
-	requests[*num]->url[length - 1] = '\0';
-
+	/* int *num = parser->data; */
+	struct request * c = parser->data;
+	strncpy(c->url, at + 1, length - 1);
+	c->url[length - 1] = '\0';
+	/* strncpy(requests[*num]->url, at + 1, length - 1); */
+	/* requests[*num]->url[length - 1] = '\0'; */
 	return 0;
 }
 
+/* Checks to see if there is a body section of the request */
+int
+on_body(http_parser * parser, const char *at, size_t length)
+{
+	/* There should be no body in a GET or HEAD request, so 
+	 * set the body flag 
+	 */
+	struct request * c = parser->data;
+	c->body = 1;
+	return 0;
+}
 /* int */
 /* on_header_field(http_parser *parser, const char *at, size_t length) */
 /* { */
@@ -522,12 +567,14 @@ retrieve_file(char *filepath)
 
 /* Create the log entry from the given parameters */
 char*
-create_log_entry(char *hostname, char *currentTime, char *method, char *url,
+create_log_entry(char *hostname, char *currentTime, const char *method, char *url,
     int status, int nBytes)
 {
 	char *entry = malloc(sizeof(char) * CHUNK);
 	ssize_t totalSize;
 	/* Create the new log entry for a http request/response  */
+	if (url == NULL || strcmp(url, "") == 0)
+		url = "-";
 	totalSize = strlen(hostname) + strlen(currentTime) +
 	strlen(method) + strlen(url) + sizeof(status) * 3 + sizeof(nBytes) * 1024;
 	snprintf(entry, totalSize, "%s [%s] \"%s %s\" %d %d\n",
@@ -545,7 +592,7 @@ get_current_time(void)
 	time(&curr);
 	currtime = gmtime(&curr);
 	cbuff = malloc(sizeof(char) * 30);
-	strftime(cbuff, 30, "%a, %d %b %Y %T GMT", currtime);
+	strftime(cbuff, 30, "%a, %d %b %Y %T %Z", currtime);
 	return cbuff;
 }
 
@@ -553,22 +600,36 @@ get_current_time(void)
 int
 start_mirror(FILE * logfile, char *hostname, char *port, int ip)
 {
-	struct addrinfo hints, *res;
+	struct addrinfo hints, *res, *res0;
 	struct event event;
 	int error;
 	int s, optval = 1;
 	int on = 1;
+	const char *cause = NULL;
 
 	memset(&hints, 0, sizeof(hints));
 	hints.ai_family = ip;
 	hints.ai_socktype = SOCK_STREAM;
 	hints.ai_flags = AI_PASSIVE;
 
-	error = getaddrinfo(hostname, port, &hints, &res);
+	s = -1;
+	error = getaddrinfo(hostname, port, &hints, &res0);
+
+	
 	if (error)
 		errx(1, "%s", gai_strerror(error));
+           for (res = res0; res; res = res->ai_next) {
+                   s = socket(res->ai_family, res->ai_socktype,
+                       res->ai_protocol);
+                   if (s == -1) {
+                           cause = "socket";
+                           continue;
+                   }
 
-	s = socket(res->ai_family, res->ai_socktype, res->ai_protocol);
+                   break;  /* okay we got one */
+           }
+	
+	/* s = socket(res->ai_family, res->ai_socktype, res->ai_protocol); */
 
 	if (s == -1) {
 		/* handle socket errors */
@@ -603,6 +664,10 @@ main(int argc, char *argv[])
 	char           *log, *address, *dirname, *port;
 	FILE           *logfile = NULL;
 
+	TAILQ_INIT(&head);
+
+	struct request *h = malloc(sizeof(struct request));
+	TAILQ_INSERT_HEAD(&head, h, requestsQueue);
 	
 	/* initialize strings and flags */
 	daemonize = 1;
