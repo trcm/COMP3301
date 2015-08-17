@@ -255,36 +255,54 @@ handle_send(int fd, short revents, void *conn)
 
 	/* There was an error with retrieving the file, send a 500 reponse */
 	if (f == -1 && errno != ENOENT) {
-		cbuff = get_current_time();
-		asprintf(&res,
-			 "HTTP/1.0 500 Internal Server Error\n" \
-			 "Date: %s\n" \
-			 "Connection: close\n" \
-			 "Server: mirrord/s4333060\n" \
-			 "\r\n", cbuff);
-		send(fd, res, strlen(res), MSG_NOSIGNAL);
+		if (errno == EACCES) {
+			cbuff = get_current_time();
+			asprintf(&res,
+				 "HTTP/1.0 403 Forbidden\n" \
+				 "Date: %s\n" \
+				 "Connection: close\n" \
+				 "Server: mirrord/s4333060\n" \
+				 "\r\n", cbuff);
+			send(fd, res, strlen(res), MSG_NOSIGNAL);
 
-		//TODO get the parser method
-		if (c->parser->method == 1) {
-			method = "GET\0";
-		} else  {
-			method = "HEAD\0";
-		}
-		entry = create_log_entry(c->remote_addr, cbuff, method,
-		    r->url, 500, 0);
-		print_to_log(entry);
-		free(entry);
-		free(res);
-		free(entry);
-		close_connection(c);
-		return;
-		/* } else if (f == -2) { */
-		/* printf("INVALID SEND 403\n"); */
-		/* requestNum++; */
-		/* sem_post(&reqSem); */
-		/* free(res); */
-		/* close_connection(c); */
-		/* return; */
+			entry = create_log_entry(c->remote_addr, cbuff, method,
+						 r->url, 403, 0);
+			print_to_log(entry);
+			free(entry);
+			free(res);
+			close_connection(c);
+			return;
+		} else {
+			cbuff = get_current_time();
+			asprintf(&res,
+				 "HTTP/1.0 500 Internal Server Error\n" \
+				 "Date: %s\n" \
+				 "Connection: close\n" \
+				 "Server: mirrord/s4333060\n" \
+				 "\r\n", cbuff);
+			send(fd, res, strlen(res), MSG_NOSIGNAL);
+
+			//TODO get the parser method
+			if (c->parser->method == 1) {
+				method = "GET\0";
+			} else  {
+				method = "HEAD\0";
+			}
+			entry = create_log_entry(c->remote_addr, cbuff, method,
+						 r->url, 500, 0);
+			print_to_log(entry);
+			free(entry);
+			free(res);
+			close_connection(c);
+			return;
+			/* } else if (f == -2) { */
+			/* printf("INVALID SEND 403\n"); */
+			/* requestNum++; */
+			/* sem_post(&reqSem); */
+			/* free(res); */
+			/* close_connection(c); */
+			/* return; */
+		} 
 	}
 
 	if (c->parser->method == 1) {
@@ -673,6 +691,8 @@ start_mirror(FILE * logfile, char *hostname, char *port, int ip)
 			continue;
 		}
 
+		setsockopt(s[nsock], SOL_SOCKET, SO_REUSEADDR | SO_REUSEPORT, &optval, sizeof(optval));
+
 		if (bind(s[nsock], res->ai_addr, res->ai_addrlen) == -1) {
 			cause = "bind";
 			save_errno = errno;
@@ -689,7 +709,6 @@ start_mirror(FILE * logfile, char *hostname, char *port, int ip)
 			continue;
 		}
 
-		setsockopt(s[nsock], SOL_SOCKET, SO_REUSEADDR | SO_REUSEPORT, &optval, sizeof(optval));
 
 		event_set(&event[nsock], s[nsock], EV_READ | EV_PERSIST, ack_con, logfile);
 		event_add(&event[nsock], NULL);
