@@ -13,7 +13,6 @@
 #include <event.h>
 #include <fcntl.h>
 #include <netdb.h>
-#include <semaphore.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -27,13 +26,11 @@
 #define CHUNK 1024
 
 /* Array to hold information about requests */
-struct request       **requests;
+/* struct request       **requests; */
 /* Counter for requests */
 int requestNum;
 /* Flags for logging */
 int logFlag;
-/* Semaphore for use when parsing http requests */
-sem_t reqSem;
 /* Pointer to the mirrord logfile */
 FILE *logptr;
 TAILQ_HEAD(listhead, request) head;
@@ -57,7 +54,6 @@ print_to_log(char *message)
 		fflush(stdout);
 	} else if (logptr) {
 		/* Process has been daemonized, output to the logfile. */
-
 		fprintf(logptr, "%s", message);
 		fflush(logptr);
 	}
@@ -71,10 +67,13 @@ ack_con(int sock, short revents, void *logfile)
 	int fd, on;
 	struct sockaddr_storage ss;
 	socklen_t socklen = sizeof(ss);
+	struct sockaddr_in *s;
+	char *address;
+	struct conn *c;
 
 	on = 1;
-
 	fd = accept(sock, (struct sockaddr *) & ss, &socklen);
+
 	if (fd == -1) {
 		switch (errno) {
 		case ECONNABORTED:
@@ -83,7 +82,6 @@ ack_con(int sock, short revents, void *logfile)
 		default:
 			err(1, "An error occured while accepting the connection");
 		}
-
 	}
 
 	/* Set the file descriptor to be non-blocking */
@@ -91,21 +89,21 @@ ack_con(int sock, short revents, void *logfile)
 		err(1, "Failed to set nonblocking fd");
 
 	/* Get the address of the incoming connection */
-	struct sockaddr_in *s = (struct sockaddr_in *) & ss;
-	char *address = inet_ntoa(s->sin_addr);
+	s = (struct sockaddr_in *) & ss;
+	address = inet_ntoa(s->sin_addr);
 
 	/* Initialize a conn struct for the new connection */
-	struct conn *c;
 	c = malloc(sizeof(*c));
 	c->ev = evbuffer_new();
 	c->parser = malloc(sizeof(struct http_parser));
 
+	/* Copy address of the connection into the conn struct */
 	strncpy(c->remote_addr, address, strlen(address) + 1);
 	c->remote_addr[strlen(c->remote_addr)] = '\0';
 
+	/* setup read and write events on the fd */
 	event_set(&c->rd_ev, fd, EV_READ | EV_PERSIST, handle_read, c);
 	event_set(&c->wr_ev, fd, EV_WRITE, handle_send, c);
-
 	event_add(&c->rd_ev, NULL);
 }
 
@@ -114,12 +112,13 @@ void
 handle_read(int fd, short revents, void *conn)
 {
 	struct conn *c = conn;
-	/* String to hold the request from the client */
 	char *req;
 	http_parser_settings *settings;
+	struct request * n;
 	int peek;
 	ssize_t recvLen, parsed;
 	char *res, *cbuff, *entry;
+	const char *method;
 	req = malloc(sizeof(char) * 4096);
 	res = malloc(sizeof(char) * 100);
 
@@ -131,18 +130,11 @@ handle_read(int fd, short revents, void *conn)
 	settings->on_body = on_body;
 	http_parser_init(c->parser, HTTP_REQUEST);
 
-	/* Critical section of code  */
-	/* Grab the semaphore and assign an incomming connection a particular request number. */
-		
-	/* sem_wait(&reqSem); */
-
-	struct request * n = malloc(sizeof(struct request));
+	/* Create a new node and add it to the tail list */
+	n = malloc(sizeof(struct request));
 	TAILQ_INSERT_TAIL(&head, n, requestsQueue);
-	requestNum++;
-	/* c->reqNum = requestNum; */
-	/* c->parser->data = &requestNum; */
+	/* add the request to the parser data field to make accessing it easier */
 	c->parser->data = n;
-	/* sem_post(&reqSem); */
 
 	/* Check to see if the connection is still alive */
 	peek = recv(fd, req, 50, MSG_PEEK);
@@ -152,13 +144,9 @@ handle_read(int fd, short revents, void *conn)
 
 		/* 
 		 * ensure that the data parsed is the same as the data recieved.
-		 * Also check to make sure the parser->http_errno was not set, and
-		 * if the request is in valid by having a body.
+		 * Also check to make sure the parser->http_errno was not set.
 		 */
-/* || n->body) { */
 		if (recvLen != parsed || c->parser->http_errno) { 
-			//TODO send 400 bad request
-			// TODO check error number then 400
 			cbuff = get_current_time();
 
 			asprintf(&res,
@@ -169,15 +157,10 @@ handle_read(int fd, short revents, void *conn)
 				 "\r\n", cbuff);
 
 			send(fd, res, strlen(res), MSG_NOSIGNAL);
-			// TODO get the method
-			/* printf("%s\n", http_method_str(c->parser->method)); */
-			const char *method = http_method_str(c->parser->method);
+			method = http_method_str(c->parser->method);
 			entry = create_log_entry(c->remote_addr,
 			   cbuff, method, n->url, 400, 0);
 			print_to_log(entry);
-			/* printf("%d errno", c->parser->http_errno); */
-			/* printf("%s\n", http_errno_name(c->parser->http_errno)); */
-			/* printf("%s\n", http_errno_description(c->parser->http_errno)); */
 			free(req);
 			free(res);
 			close_connection(c);
@@ -295,13 +278,6 @@ handle_send(int fd, short revents, void *conn)
 			free(res);
 			close_connection(c);
 			return;
-			/* } else if (f == -2) { */
-			/* printf("INVALID SEND 403\n"); */
-			/* requestNum++; */
-			/* sem_post(&reqSem); */
-			/* free(res); */
-			/* close_connection(c); */
-			/* return; */
 		} 
 	}
 
@@ -476,12 +452,16 @@ close_connection(struct conn * c)
 {
 	struct request *r = c->parser->data;
 	TAILQ_REMOVE(&head, r, requestsQueue);
+
 	free(c->parser->data);
 	evbuffer_free(c->ev);
+
 	event_del(&c->rd_ev);
 	event_del(&c->wr_ev);
+
 	free(c->parser);
 	close(EVENT_FD(&c->rd_ev));
+
 	free(c);
 }
 
@@ -490,12 +470,12 @@ int
 on_url(http_parser * parser, const char *at, size_t length)
 {
 	/* Request number for the connection */
-	/* int *num = parser->data; */
-	struct request * c = parser->data;
+	struct request * c;
+
+	c = parser->data;
 	strncpy(c->url, at + 1, length - 1);
 	c->url[length - 1] = '\0';
-	/* strncpy(requests[*num]->url, at + 1, length - 1); */
-	/* requests[*num]->url[length - 1] = '\0'; */
+
 	return 0;
 }
 
@@ -506,44 +486,21 @@ on_body(http_parser * parser, const char *at, size_t length)
 	/* There should be no body in a GET or HEAD request, so 
 	 * set the body flag 
 	 */
-	struct request * c = parser->data;
+	struct request * c;
+
+	c = parser->data;
 	c->body = 1;
+
 	return 0;
 }
-/* int */
-/* on_header_field(http_parser *parser, const char *at, size_t length) */
-/* { */
-/* requests[requestNum]->headerNum++; */
-/* int hNum =  requests[requestNum]->headerNum; */
-/* char field[1024]; */
-/* strncpy(field, at, length); */
-/* field[length] = '\0'; */
-/* printf("header %s: ", field); */
-/* strncpy(requests[requestNum]->headerFields[hNum], field, */
-/* strlen(field)); */
-/* return 0; */
-/* } */
-
-/* int */
-/* on_header_value(http_parser *parser, const char *at, size_t length) */
-/* { */
-/* int hNum =  requests[requestNum]->headerNum; */
-/* char field[1024]; */
-/* strncpy(field, at, length); */
-/* field[length] = '\0'; */
-/* printf("%s\n", field); */
-/* strncat(requests[requestNum]->headerValues[hNum], field, */
-/* strlen(field)); */
-/* return 0; */
-/* } */
 
 /* Attempt to retrieve the file that the connection indicated */
 int
 retrieve_file(char *filepath)
 {
-	int fd ;
-	char *path, *absPath;
 	struct stat st;
+	int fd ;
+	char *absPath, *path;
 	char *token, *tok, *t1, *t2;
 
 	/* attempt to open the file */
@@ -618,51 +575,7 @@ get_current_time(void)
 int
 start_mirror(FILE * logfile, char *hostname, char *port, int ip)
 {
-	/* struct addrinfo hints, *res, *res0; */
 	struct event event[2];
-	/* int error; */
-	/* int s, optval = 1; */
-	/* int on = 1; */
-	/* const char *cause = NULL; */
-	/* printf("Hostname %s\n", hostname); */
-	/* memset(&hints, 0, sizeof(hints)); */
-	/* hints.ai_family = ip; */
-	/* hints.ai_socktype = SOCK_STREAM; */
-	/* hints.ai_flags = AI_PASSIVE; */
-
-	/* s = -1; */
-	/* error = getaddrinfo(hostname, port, &hints, &res0); */
-
-	
-	/* if (error) */
-	/* 	errx(1, "%s", gai_strerror(error)); */
-	/* for (res = res0; res; res = res->ai_next) { */
-	/* 	s = socket(res->ai_family, res->ai_socktype, */
-	/* 		   res->ai_protocol); */
-	/* 	if (s == -1) { */
-	/* 		cause = "socket"; */
-	/* 		continue; */
-	/* 	} */
-
-	/* 	break;  /\* okay we got one *\/ */
-	/* } */
-	
-	/* /\* s = socket(res->ai_family, res->ai_socktype, res->ai_protocol); *\/ */
-
-	/* if (s == -1) { */
-	/* 	/\* handle socket errors *\/ */
-	/* } */
-	/* setsockopt(s, SOL_SOCKET, SO_REUSEPORT, &optval, sizeof(optval)); */
-
-	/* if (bind(s, res->ai_addr, res->ai_addrlen) == -1) */
-	/* 	err(1, "Failed to bind to port %s", port); */
-
-	/* if (ioctl(s, FIONBIO, &on) == -1) */
-	/* 	err(1, "Failed to set nonblocking socket"); */
-
-	/* if (listen(s, 5) == -1) */
-	/* 	err(1, "Failed to listen on socket"); */
-	event_init();
 
 	struct addrinfo hints, *res, *res0;
 	int error;
@@ -675,6 +588,8 @@ start_mirror(FILE * logfile, char *hostname, char *port, int ip)
 
 	on = 1;
 	
+	event_init();
+
 	memset(&hints, 0, sizeof(hints));
 	hints.ai_family = ip;
 	hints.ai_socktype = SOCK_STREAM;
@@ -686,12 +601,12 @@ start_mirror(FILE * logfile, char *hostname, char *port, int ip)
 	for (res = res0; res && nsock < 2; res = res->ai_next) {
 		s[nsock] = socket(res->ai_family, res->ai_socktype,
 				  res->ai_protocol);
+		setsockopt(s[nsock], SOL_SOCKET, SO_REUSEADDR | SO_REUSEPORT, &optval, sizeof(optval));
+
 		if (s[nsock] == -1) {
 			cause = "socket";
 			continue;
 		}
-
-		setsockopt(s[nsock], SOL_SOCKET, SO_REUSEADDR | SO_REUSEPORT, &optval, sizeof(optval));
 
 		if (bind(s[nsock], res->ai_addr, res->ai_addrlen) == -1) {
 			cause = "bind";
@@ -718,10 +633,7 @@ start_mirror(FILE * logfile, char *hostname, char *port, int ip)
 	}
 	if (nsock == 0)
 		err(1, "%s", cause);
-	/* freeaddrinfo(res0); */
 
-
-	/* event_set(&event, s, EV_READ | EV_PERSIST, ack_con, logfile); */
 	event_dispatch();
 
 	freeaddrinfo(res);
@@ -732,14 +644,16 @@ start_mirror(FILE * logfile, char *hostname, char *port, int ip)
 int
 main(int argc, char *argv[])
 {
+	struct request *listHead;
 	int 		ch, ipv, daemonize, portFlag;
 	char           *log, *address, *dirname, *port;
+	struct servent *s;
 	FILE           *logfile = NULL;
 
 	TAILQ_INIT(&head);
 
-	struct request *h = malloc(sizeof(struct request));
-	TAILQ_INSERT_HEAD(&head, h, requestsQueue);
+	listHead = malloc(sizeof(struct request));
+	TAILQ_INSERT_HEAD(&head, listHead, requestsQueue);
 	
 	/* initialize strings and flags */
 	daemonize = 1;
@@ -756,16 +670,6 @@ main(int argc, char *argv[])
 
 	/* set default ip type */
 	ipv = PF_UNSPEC;
-	
-	/* initialize requests array */
-	/* requests = malloc(sizeof(struct request *) * MAX_REQUESTS); */
-	/* int 		i; */
-	/* for (i = 0; i < MAX_REQUESTS; i++) { */
-	/* 	requests[i] = malloc(sizeof(struct request)); */
-	/* } */
-
-	/* initialize binary semaphore */
-	sem_init(&reqSem, 0, 1);
 
 	/* Handle sigpipe */
 	signal(SIGPIPE, SIG_IGN);
@@ -807,7 +711,7 @@ main(int argc, char *argv[])
 
 			if (atoi(port) == 0) {
 				/* port was given as a name, find the port number */
-				struct servent *s = getservbyname(port, NULL);
+				s = getservbyname(port, NULL);
 				if (s) {
 					printf("%d\n", s->s_port);
 					asprintf(&port, "%d", s->s_port);
@@ -823,7 +727,7 @@ main(int argc, char *argv[])
 
 	/* If no port is supplied, find the default http port number */
 	if (!portFlag) {
-		struct servent *s = getservbyname("http", NULL);
+		s = getservbyname("http", NULL);
 		if (s) {
 			asprintf(&port, "%d", s->s_port);
 		} else {
@@ -831,10 +735,11 @@ main(int argc, char *argv[])
 		}
 	}
 
+	/* change to the desired directory */
 	dirname = argv[argc - 1];
-	if (chdir(dirname) == -1) {
+	if (chdir(dirname) == -1) 
 		usage();
-	}
+
 	if (daemonize) {
 		/* daemonize the process */
 		daemon(1, 0);

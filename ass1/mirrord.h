@@ -6,30 +6,29 @@ struct request {
 	char method[MAX_SIZE];
 	char host[MAX_SIZE];
 	char url[50];
-	char remote_addr[16];
-	char headerFields[30][30];
-	char headerValues[30][30];
-	int headerNum;
 	int body;
 	TAILQ_ENTRY(request) requestsQueue;
 };
 
 
 struct conn {
+	/* events for accessing the socket */
 	struct event rd_ev;
 	struct event wr_ev;
+	/* events for reading and sending the specified file */
 	struct event rd_fev;
 	struct event wr_fev;
+
 	struct evbuffer *ev;
 	struct http_parser *parser;
+
 	char remote_addr[30];
 	off_t fileSize;
-	int reqNum;
 	size_t totalSent;
 	int requestNum;
 };
 
-
+/* function prototypes */
 int		 on_url(http_parser*, const char*, size_t);
 int		 on_body(http_parser*, const char*, size_t);
 int 		 start_mirror(FILE*, char*, char*, int);
