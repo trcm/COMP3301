@@ -25,8 +25,6 @@
 #define MAX_REQUESTS 1024
 #define CHUNK 1024
 
-/* Array to hold information about requests */
-/* struct request       **requests; */
 /* Counter for requests */
 int requestNum;
 /* Flags for logging */
@@ -60,17 +58,20 @@ print_to_log(char *message)
 	return 0;
 }
 
-/* Accept new connections on the socket */
+/*
+ * ack_on Accept new connections on the socket, mallocs locations for the relevant data structures
+ * then triggers the events linked to the file descriptors
+ */
 void
 ack_con(int sock, short revents, void *logfile)
 {
-	int fd, on;
 	struct sockaddr_storage ss;
-	socklen_t socklen = sizeof(ss);
-	struct sockaddr_in *s;
-	char *address;
 	struct conn *c;
-
+	struct sockaddr_in *s;
+	socklen_t socklen = sizeof(ss);
+	int fd, on;
+	char *address;
+	
 	on = 1;
 	fd = accept(sock, (struct sockaddr *) & ss, &socklen);
 
@@ -86,7 +87,8 @@ ack_con(int sock, short revents, void *logfile)
 
 	/* Set the file descriptor to be non-blocking */
 	if (ioctl(fd, FIONBIO, &on) == -1)
-		err(1, "Failed to set nonblocking fd");
+		/* system call failed, exit gracefully */
+		return;
 
 	/* Get the address of the incoming connection */
 	s = (struct sockaddr_in *) & ss;
@@ -107,25 +109,30 @@ ack_con(int sock, short revents, void *logfile)
 	event_add(&c->rd_ev, NULL);
 }
 
-/* Handles any read event that will happen on a connections file descriptor */
+/* 
+ * handle_read is responsible for reading the request from the socket.
+ * handle_read also does some initial parsing of the request i.e. checks
+ * if the request is invalid and deals with this accordingly.
+ */
 void
 handle_read(int fd, short revents, void *conn)
 {
 	struct conn *c = conn;
-	char *req;
 	http_parser_settings *settings;
 	struct request * n;
-	int peek;
 	ssize_t recvLen, parsed;
-	char *res, *cbuff, *entry;
+	int peek;
 	const char *method;
+	char *cbuff, *entry, *req, *res; 
+
 	req = malloc(sizeof(char) * 4096);
 	res = malloc(sizeof(char) * 100);
 
 	/* Setup settings for the http parser */
 	settings = malloc(sizeof(http_parser_settings));
 	http_parser_settings_init(settings);
-	
+
+	/* setup parser callbacks */
 	settings->on_url = on_url;
 	settings->on_body = on_body;
 	http_parser_init(c->parser, HTTP_REQUEST);
@@ -133,6 +140,7 @@ handle_read(int fd, short revents, void *conn)
 	/* Create a new node and add it to the tail list */
 	n = malloc(sizeof(struct request));
 	TAILQ_INSERT_TAIL(&head, n, requestsQueue);
+
 	/* add the request to the parser data field to make accessing it easier */
 	c->parser->data = n;
 
@@ -141,7 +149,6 @@ handle_read(int fd, short revents, void *conn)
 	if (peek > 0) {
 		recvLen = recv(fd, req, 4096, 0);
 		parsed = http_parser_execute(c->parser, settings, req, recvLen);
-
 		/* 
 		 * ensure that the data parsed is the same as the data recieved.
 		 * Also check to make sure the parser->http_errno was not set.
@@ -185,36 +192,32 @@ handle_read(int fd, short revents, void *conn)
 	event_add(&c->wr_ev, NULL);
 }
 
-/* Handles writing the response and well as any files back to the connection */
+/* handle_send deals with processing requests recieved by mirrord.
+ * It creates the appropriate responses genereated by the requests 
+ * and send them.  In the case of a successful GET request it will 
+ * also initiate sending the file to the recipient.
+ */
 void
 handle_send(int fd, short revents, void *conn)
 {
-
 	struct conn *c = conn;
 	struct request *r = c->parser->data;
-	const char *method;
-	char *res, *cbuff;
-	int f, sendLen;
-	char *entry;
 	struct stat st;
 	struct tm *modtime;
+	const char *method;
 	char buff[30];
+	int f, sendLen;
+	char *cbuff, *entry, *res;
 
 	c = conn;
 	res = malloc(sizeof(char) * 1024);
+
+	/* grab the method from the parsed data */
 	method = http_method_str(c->parser->method);
-	/* printf("%s %d\n", http_method_str(c->parser->method), r->body); */
+
 	/* check the method of the connections request */
-	switch (c->parser->method) {
-	case 1:
-		strncpy(r->method, "GET\0", 4);
-		break;
-	case 2:
-		strncpy(r->method, "HEAD\0", 5);
-		break;
-	default:
-		/* method not supported */
-		/* log, send respone and return */
+	if (c->parser->method != 1 && c->parser->method != 2) {
+		/* method not supported send the 405 response*/
 		cbuff = get_current_time();
 		asprintf(&res,
 			 "HTTP/1.0 405 Method not allowed\n" \
@@ -233,11 +236,11 @@ handle_send(int fd, short revents, void *conn)
 	}
 
 	/* Try and retrieve the file requested */
-	/* f = retrieve_file(requests[c->reqNum]->url); */
 	f = retrieve_file(r->url);
 
 	/* There was an error with retrieving the file, send a 500 reponse */
 	if (f == -1 && errno != ENOENT) {
+		/* Insufficient file permissions to get the file, send a 403 */
 		if (errno == EACCES) {
 			cbuff = get_current_time();
 			asprintf(&res,
@@ -256,6 +259,7 @@ handle_send(int fd, short revents, void *conn)
 			close_connection(c);
 			return;
 		} else {
+			/* another unforseen error occured, send a 500 response */
 			cbuff = get_current_time();
 			asprintf(&res,
 				 "HTTP/1.0 500 Internal Server Error\n" \
@@ -264,13 +268,6 @@ handle_send(int fd, short revents, void *conn)
 				 "Server: mirrord/s4333060\n" \
 				 "\r\n", cbuff);
 			send(fd, res, strlen(res), MSG_NOSIGNAL);
-
-			//TODO get the parser method
-			if (c->parser->method == 1) {
-				method = "GET\0";
-			} else  {
-				method = "HEAD\0";
-			}
 			entry = create_log_entry(c->remote_addr, cbuff, method,
 						 r->url, 500, 0);
 			print_to_log(entry);
@@ -287,9 +284,10 @@ handle_send(int fd, short revents, void *conn)
 			/* File exists and is able to be read */
 			fstat(f, &st);
 
-			/* create time buffers for headers and log */
+			/* get the last modification time */
 			modtime = localtime(&st.st_mtime);
 			strftime(buff, 30, "%a, %d %b %Y %T %Z", modtime);
+
 			cbuff = get_current_time();
 			/* create response header */
 			asprintf(&res,
@@ -303,11 +301,10 @@ handle_send(int fd, short revents, void *conn)
 			sendLen = 0;
 			/* send response header */
 			sendLen = send(fd, res, strlen(res), MSG_NOSIGNAL);
-			/* entry = create_log_entry(c->remote_addr, cbuff, requests[c->reqNum]->method, */
-			/* 	 requests[c->reqNum]->url, 200, st.st_size); */
-			entry = create_log_entry(c->remote_addr, cbuff, r->method,
+			entry = create_log_entry(c->remote_addr, cbuff, method,
 				 r->url, 200, st.st_size);
 
+			print_to_log(entry);
 			/* start reading the file */
 			evbuffer_free(c->ev);
 			c->ev = evbuffer_new();
@@ -321,7 +318,8 @@ handle_send(int fd, short revents, void *conn)
 
 			event_add(&c->rd_fev, NULL);
 
-			print_to_log(entry);
+			free(entry);
+			free(res);
 		} else {
 			/* send 404 header */
 			res = "HTTP/1.0 404 NOT FOUND\n" \
@@ -332,9 +330,7 @@ handle_send(int fd, short revents, void *conn)
 			/* create time buffers for headers and log */
 			cbuff = get_current_time();
 
-			fflush(stdout);
-
-			entry = create_log_entry(c->remote_addr, cbuff, r->method,
+			entry = create_log_entry(c->remote_addr, cbuff, method,
 					  r->url, 404, 0);
 			print_to_log(entry);
 			send(fd, res, strlen(res), MSG_NOSIGNAL);
@@ -348,10 +344,13 @@ handle_send(int fd, short revents, void *conn)
 		/* HEAD request */
 		if (f > 0) {
 			fstat(f, &st);
-			/* create time buffers for headers and log */
+
+			/* get file's last modification time' */
 			modtime = localtime(&st.st_mtime);
 			strftime(buff, 30, "%a, %d %b %Y %T %Z", modtime);
+
 			cbuff = get_current_time();
+
 			/* create response header */
 			asprintf(&res,
 				 "HTTP/1.0 200 OK\n" \
@@ -361,11 +360,10 @@ handle_send(int fd, short revents, void *conn)
 				 "Connection: close\n" \
 				 "Server: mirrord/s4333060\n" \
 				 "\r\n", cbuff, buff, st.st_size);
-			sendLen = 0;
 			/* send response header */
 			sendLen = send(fd, res, strlen(res), MSG_NOSIGNAL);
 
-			entry = create_log_entry(c->remote_addr, cbuff, r->method,
+			entry = create_log_entry(c->remote_addr, cbuff, method,
 					  r->url, 200, 0);
 			print_to_log(entry);
 
@@ -383,12 +381,11 @@ handle_send(int fd, short revents, void *conn)
 			/* create time buffers for headers and log */
 			cbuff = get_current_time();
 
-			entry = create_log_entry(c->remote_addr, cbuff, r->method,
+			entry = create_log_entry(c->remote_addr, cbuff, method,
 			    r->url, 404, 0);
 			print_to_log(entry);
 			send(fd, res, strlen(res), MSG_NOSIGNAL);
 
-			/* free(res); */
 			free(entry);
 			close_connection(c);
 			return;
@@ -396,13 +393,16 @@ handle_send(int fd, short revents, void *conn)
 	}
 }
 
-/* Reads data from the desired file into an evbuffer */
+/* read_file Reads data from the desired file into an evbuffer */
 void
 read_file(int fd, short revents, void *conn)
 {
-	struct conn *c = conn;
-	size_t len = 0;
+	struct conn *c;
+	size_t len;
 
+	c = conn;
+	len = 0;
+	
 	/* Buffer is not empty, there is still data to be written */
 	if (EVBUFFER_LENGTH(c->ev) > 0)
 		return;
@@ -424,7 +424,7 @@ read_file(int fd, short revents, void *conn)
 	event_add(&c->wr_fev, NULL);
 }
 
-/* Send the file to a file descriptor from the evbuffer */
+/* send_file Sends the file to a file descriptor from the evbuffer */
 void
 send_file(int fd, short revents, void *conn)
 {
@@ -446,11 +446,13 @@ send_file(int fd, short revents, void *conn)
 	}
 }
 
-/* Close down a connection and free resources */
+/* close_connection Close down a connection and free resources */
 void
 close_connection(struct conn * c)
 {
-	struct request *r = c->parser->data;
+	struct request *r;
+	r = c->parser->data;
+
 	TAILQ_REMOVE(&head, r, requestsQueue);
 
 	free(c->parser->data);
@@ -465,21 +467,22 @@ close_connection(struct conn * c)
 	free(c);
 }
 
-/* URL callback, will be triggered when a URL is found by the http_parser */
+/* on_url - URL callback, will be triggered when a URL is found by the http_parser */
 int
 on_url(http_parser * parser, const char *at, size_t length)
 {
 	/* Request number for the connection */
 	struct request * c;
-
+	
 	c = parser->data;
+	/* copy the url into the request data structure */
 	strncpy(c->url, at + 1, length - 1);
 	c->url[length - 1] = '\0';
 
 	return 0;
 }
 
-/* Checks to see if there is a body section of the request */
+/* on_bocy Checks to see if there is a body section of the request */
 int
 on_body(http_parser * parser, const char *at, size_t length)
 {
@@ -494,14 +497,13 @@ on_body(http_parser * parser, const char *at, size_t length)
 	return 0;
 }
 
-/* Attempt to retrieve the file that the connection indicated */
+/* retrieve_file Attempt to retrieve the file that the connection indicated */
 int
 retrieve_file(char *filepath)
 {
 	struct stat st;
 	int fd ;
-	char *absPath, *path;
-	char *token, *tok, *t1, *t2;
+	char *absPath, *path, *token, *absTok, *t1, *t2;
 
 	/* attempt to open the file */
 	fd = open(filepath, O_RDONLY);
@@ -519,9 +521,9 @@ retrieve_file(char *filepath)
 	if (absPath != NULL) {
 		/* Tokenize and loop over the parts of the directories */
 		token = strtok_r(path, "/", &t1);
-		tok = strtok_r(absPath, "/", &t2);
-		while (token != NULL && tok != NULL) {
-			if (strcmp(token, tok) != 0) {
+		absTok = strtok_r(absPath, "/", &t2);
+		while (token != NULL && absTok != NULL) {
+			if (strcmp(token, absTok) != 0) {
 				/* 
 				 * If the tokens don't match the file path is 
 				 * forbidden. 
@@ -531,10 +533,11 @@ retrieve_file(char *filepath)
 				break;
 			}
 			token = strtok_r(NULL, "/", &t1);
-			tok = strtok_r(NULL, "/", &t2);
+			absTok = strtok_r(NULL, "/", &t2);
 		}
 		/* Filepath is valid */
 	}
+
 	free(absPath);
 	free(path);
 	return fd;
@@ -557,7 +560,7 @@ create_log_entry(char *hostname, char *currentTime, const char *method, char *ur
 	return entry;
 }
 
-/* Grab the current time for responses and log entries */
+/* get_current_time Grabs the current time for responses and log entries */
 char*
 get_current_time(void)
 {
@@ -571,21 +574,17 @@ get_current_time(void)
 	return cbuff;
 }
 
-/* Start the socket for mirrord */
+/* start_mirror handles starting the socket/s for mirrord */
 int
 start_mirror(FILE * logfile, char *hostname, char *port, int ip)
 {
-	struct event event[2];
-
+	struct event event[2]; 
 	struct addrinfo hints, *res, *res0;
-	int error;
-	int save_errno;
 	int s[2];
-	int on;
-	int nsock;
+	int error, nsock, on, optval, save_errno;
 	const char *cause = NULL;
-	int optval = 1;
 
+	optval = 1;
 	on = 1;
 	
 	event_init();
@@ -598,33 +597,41 @@ start_mirror(FILE * logfile, char *hostname, char *port, int ip)
 	if (error)
 		errx(1, "%s", gai_strerror(error));
 	nsock = 0;
+
+	/* loop over responses from getaddrinfo */
 	for (res = res0; res && nsock < 2; res = res->ai_next) {
+		/* create a new socket for each response */
 		s[nsock] = socket(res->ai_family, res->ai_socktype,
 				  res->ai_protocol);
+
+		/* set socket ports to be reuseable */
 		setsockopt(s[nsock], SOL_SOCKET, SO_REUSEADDR | SO_REUSEPORT, &optval, sizeof(optval));
 
 		if (s[nsock] == -1) {
-			cause = "socket";
+			cause = "Socket call failed";
 			continue;
 		}
 
+		/* bind the specified port to the socket */
 		if (bind(s[nsock], res->ai_addr, res->ai_addrlen) == -1) {
-			cause = "bind";
+			cause = "Bind call failed";
 			save_errno = errno;
 			close(s[nsock]);
 			errno = save_errno;
 			continue;
 		}
 
+		/* set the socket to nonblocking */
 		if (ioctl(s[nsock], FIONBIO, &on) == -1)
 			err(1, "Failed to set nonblocking socket");
 
+		/* start listenting on the socket */
 		if (listen(s[nsock], 5)) {
-			cause = "Listen";
+			cause = "Listen call failed";
 			continue;
 		}
 
-
+		/* setup events and callbacks for the socket */
 		event_set(&event[nsock], s[nsock], EV_READ | EV_PERSIST, ack_con, logfile);
 		event_add(&event[nsock], NULL);
 		nsock++;
@@ -634,13 +641,16 @@ start_mirror(FILE * logfile, char *hostname, char *port, int ip)
 	if (nsock == 0)
 		err(1, "%s", cause);
 
+	/* start the event loop */
 	event_dispatch();
 
 	freeaddrinfo(res);
 	return 0;
 }
 
-
+/* 
+ * Mirrord is a simple file server which mirrors a particular directory. 
+ */
 int
 main(int argc, char *argv[])
 {
