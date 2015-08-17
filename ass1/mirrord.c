@@ -600,56 +600,109 @@ get_current_time(void)
 int
 start_mirror(FILE * logfile, char *hostname, char *port, int ip)
 {
-	struct addrinfo hints, *res, *res0;
-	struct event event;
-	int error;
-	int s, optval = 1;
-	int on = 1;
-	const char *cause = NULL;
+	/* struct addrinfo hints, *res, *res0; */
+	struct event event[2];
+	/* int error; */
+	/* int s, optval = 1; */
+	/* int on = 1; */
+	/* const char *cause = NULL; */
+	/* printf("Hostname %s\n", hostname); */
+	/* memset(&hints, 0, sizeof(hints)); */
+	/* hints.ai_family = ip; */
+	/* hints.ai_socktype = SOCK_STREAM; */
+	/* hints.ai_flags = AI_PASSIVE; */
 
+	/* s = -1; */
+	/* error = getaddrinfo(hostname, port, &hints, &res0); */
+
+	
+	/* if (error) */
+	/* 	errx(1, "%s", gai_strerror(error)); */
+	/* for (res = res0; res; res = res->ai_next) { */
+	/* 	s = socket(res->ai_family, res->ai_socktype, */
+	/* 		   res->ai_protocol); */
+	/* 	if (s == -1) { */
+	/* 		cause = "socket"; */
+	/* 		continue; */
+	/* 	} */
+
+	/* 	break;  /\* okay we got one *\/ */
+	/* } */
+	
+	/* /\* s = socket(res->ai_family, res->ai_socktype, res->ai_protocol); *\/ */
+
+	/* if (s == -1) { */
+	/* 	/\* handle socket errors *\/ */
+	/* } */
+	/* setsockopt(s, SOL_SOCKET, SO_REUSEPORT, &optval, sizeof(optval)); */
+
+	/* if (bind(s, res->ai_addr, res->ai_addrlen) == -1) */
+	/* 	err(1, "Failed to bind to port %s", port); */
+
+	/* if (ioctl(s, FIONBIO, &on) == -1) */
+	/* 	err(1, "Failed to set nonblocking socket"); */
+
+	/* if (listen(s, 5) == -1) */
+	/* 	err(1, "Failed to listen on socket"); */
+	event_init();
+
+	struct addrinfo hints, *res, *res0;
+	int error;
+	int save_errno;
+	int s[2];
+	int on;
+	int nsock;
+	const char *cause = NULL;
+	int optval = 1;
+
+	on = 1;
+	
 	memset(&hints, 0, sizeof(hints));
 	hints.ai_family = ip;
 	hints.ai_socktype = SOCK_STREAM;
 	hints.ai_flags = AI_PASSIVE;
-
-	s = -1;
 	error = getaddrinfo(hostname, port, &hints, &res0);
-
-	
 	if (error)
 		errx(1, "%s", gai_strerror(error));
-           for (res = res0; res; res = res->ai_next) {
-                   s = socket(res->ai_family, res->ai_socktype,
-                       res->ai_protocol);
-                   if (s == -1) {
-                           cause = "socket";
-                           continue;
-                   }
+	nsock = 0;
+	for (res = res0; res && nsock < 2; res = res->ai_next) {
+		s[nsock] = socket(res->ai_family, res->ai_socktype,
+				  res->ai_protocol);
+		if (s[nsock] == -1) {
+			cause = "socket";
+			continue;
+		}
 
-                   break;  /* okay we got one */
-           }
-	
-	/* s = socket(res->ai_family, res->ai_socktype, res->ai_protocol); */
+		if (bind(s[nsock], res->ai_addr, res->ai_addrlen) == -1) {
+			cause = "bind";
+			save_errno = errno;
+			close(s[nsock]);
+			errno = save_errno;
+			continue;
+		}
 
-	if (s == -1) {
-		/* handle socket errors */
+		if (ioctl(s[nsock], FIONBIO, &on) == -1)
+			err(1, "Failed to set nonblocking socket");
+
+		if (listen(s[nsock], 5)) {
+			cause = "Listen";
+			continue;
+		}
+
+		setsockopt(s[nsock], SOL_SOCKET, SO_REUSEADDR | SO_REUSEPORT, &optval, sizeof(optval));
+
+		event_set(&event[nsock], s[nsock], EV_READ | EV_PERSIST, ack_con, logfile);
+		event_add(&event[nsock], NULL);
+		nsock++;
+		if (ip == AF_INET)
+			break;
 	}
-	setsockopt(s, SOL_SOCKET, SO_REUSEPORT, &optval, sizeof(optval));
+	if (nsock == 0)
+		err(1, "%s", cause);
+	/* freeaddrinfo(res0); */
 
-	if (bind(s, res->ai_addr, res->ai_addrlen) == -1)
-		err(1, "Failed to bind to port %s", port);
 
-	if (ioctl(s, FIONBIO, &on) == -1)
-		err(1, "Failed to set nonblocking socket");
-
-	if (listen(s, 5) == -1)
-		err(1, "Failed to listen on socket");
-
-	event_init();
-
-	event_set(&event, s, EV_READ | EV_PERSIST, ack_con, logfile);
-	event_add(&event, NULL);
-
+	/* event_set(&event, s, EV_READ | EV_PERSIST, ack_con, logfile); */
 	event_dispatch();
 
 	freeaddrinfo(res);
@@ -686,12 +739,11 @@ main(int argc, char *argv[])
 	ipv = PF_UNSPEC;
 	
 	/* initialize requests array */
-	requests = malloc(sizeof(struct request *) * MAX_REQUESTS);
-	int 		i;
-	for (i = 0; i < MAX_REQUESTS; i++) {
-		requests[i] = malloc(sizeof(struct request));
-
-	}
+	/* requests = malloc(sizeof(struct request *) * MAX_REQUESTS); */
+	/* int 		i; */
+	/* for (i = 0; i < MAX_REQUESTS; i++) { */
+	/* 	requests[i] = malloc(sizeof(struct request)); */
+	/* } */
 
 	/* initialize binary semaphore */
 	sem_init(&reqSem, 0, 1);
